@@ -28,6 +28,8 @@ The original jishaku (Discord.py) is [here](https://github.com/Gorialis/jishaku)
 - **`jsk sh`** — Run system shell commands with live-streamed output (PowerShell/cmd/`$SHELL`).
 - **`jsk cat` / `jsk curl`** — Read local files (with line spans) or remote text resources.
 - **Diagnostics** — `jsk` status summary, `jsk ping` round-trip timing, `jsk tasks` / `jsk cancel`.
+- **Slash commands** — `/jsk <subcommand>` (bot use, not selfbots); the same handlers as the text
+  commands, with `js`/`sh` prompting a code-input modal instead of a plain string option.
 - **Cross-library** — one API for discord.js v13/v14 and the selfbot forks; no builder-class lock-in.
 - **Zero runtime dependencies** — discord.js is a peer dependency; Shift_JIS and HTTP use Node built-ins.
 
@@ -42,7 +44,8 @@ npm install discord.js
 ## Examples
 
 Full examples are in [examples/](./examples): [bot](./examples/bot.mjs), [selfbot](./examples/selfbot.mjs),
-and [security mode](./examples/security.mjs) (`security: true` vs `false`).
+[slash commands](./examples/slash.mjs), and [security mode](./examples/security.mjs)
+(`security: true` vs `false`).
 
 ```js
 import { Client, GatewayIntentBits } from 'discord.js'
@@ -78,6 +81,7 @@ client.login(process.env.DISCORD_TOKEN)
 | `owners`         | `string[]` | *(auto)*   | Allowed user IDs. Omitted → application owner/team (or the selfbot user).   |
 | `encoding`       | `string`   | `'UTF-8'`  | Shell output decoding. `Shift_JIS` is supported natively.                   |
 | `consoleLog`     | `boolean`  | `true`     | Print init notices and command errors to the console.                       |
+| `slashCommandName` | `string` | `'jsk'`    | Name of the `/jsk` slash command (see below).                               |
 | `security`       | `boolean`  | `false`    | Redact secrets from all output/logs (see below).                            |
 | `secretPatterns` | `RegExp[]` | `[]`       | Extra credential regexes to redact in security mode.                        |
 | `secretValues`   | `string[]` | `[]`       | Extra exact strings to redact in security mode.                             |
@@ -130,9 +134,36 @@ not covered — there is no method to intercept.
 > output may occasionally be redacted too. Treat it as defense-in-depth, not a substitute for
 > not printing secrets in the first place.
 
+## Slash commands
+
+Bot accounts (not selfbots — Discord doesn't allow user accounts to have application commands)
+can also drive djsk through `/jsk <subcommand>`, using the exact same command handlers as the
+text commands:
+
+```js
+import { getSlashCommandData, Jishaku } from 'djsk'
+
+const jsk = new Jishaku(client, { slashCommandName: 'jsk' }) // must match what you register below
+
+client.once('ready', async (readyClient) => {
+  // Register once (e.g. behind a one-off script or a flag), not on every boot.
+  await readyClient.application.commands.set([getSlashCommandData(jsk.config.slashCommandName)])
+})
+
+client.on('interactionCreate', (interaction) => jsk.onInteractionCreate(interaction))
+```
+
+`getSlashCommandData()` returns a plain command payload (no `SlashCommandBuilder`), so you can
+also register it yourself via any REST call or deploy script instead of `commands.set(...)`.
+
+`js` and `sh` take no string option — invoking them immediately opens a code-input modal
+(Discord's slash command input box isn't well suited to writing/pasting multi-line code), and
+the command runs once you submit it. Every other subcommand (`cat`, `curl`, `ping`, `shutdown`,
+`tasks`, `cancel`, `retain`, `status`, `help`) takes normal options.
+
 ## Commands
 
-All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js 1 + 1`).
+All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js 1 + 1`) or `/jsk <command>`.
 
 | Command                    | Description                                                          |
 | -------------------------- | ------------------------------------------------------------------- |
@@ -152,8 +183,11 @@ All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js 1 + 1`).
 
 The following variables are injected into the evaluation scope:
 
-`client` / `bot`, `ctx`, `message` / `msg`, `author`, `channel`, `guild`, `me`,
+`client` / `bot`, `ctx`, `message` / `msg`, `interaction`, `author`, `channel`, `guild`, `me`,
 `_` (last result), and `vars` (a persistent object when retention is on).
+
+`message`/`msg` are `null` and `interaction` is set when `js`/`sh` was invoked via slash command
+(through the code-input modal) instead of a text command, and vice versa.
 
 > [!Note]
 >

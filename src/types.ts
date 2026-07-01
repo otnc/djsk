@@ -1,4 +1,4 @@
-import type { Client, Message } from 'discord.js'
+import type { Client, Interaction, Message } from 'discord.js'
 
 /**
  * A discord.js (or compatible fork) Client.
@@ -11,6 +11,12 @@ export type AnyClient = Client
 
 /** A discord.js (or compatible fork) Message. */
 export type AnyMessage = Message
+
+/**
+ * A discord.js (or compatible fork) Interaction (chat input command or modal submit).
+ * The discord.js types are used purely for editor ergonomics; djsk duck-types at runtime.
+ */
+export type AnyInteraction = Interaction
 
 /** Text decoding used when reading shell output. */
 export type Encoding = 'UTF-8' | 'Shift_JIS' | (string & {})
@@ -28,6 +34,11 @@ export interface JishakuConfig {
   encoding?: Encoding
   /** Whether djsk prints init/update notices and errors to the console. Default: `true`. */
   consoleLog?: boolean
+  /**
+   * Name of the slash command djsk registers/handles for interaction-based use (see
+   * {@link getSlashCommandData} and {@link Jishaku.onInteractionCreate}). Default: `jsk`.
+   */
+  slashCommandName?: string
   /**
    * Security mode. When `true`, djsk best-effort redacts secrets — the Discord token,
    * secret-like `process.env` values, `.env` assignments and common credential formats —
@@ -55,6 +66,7 @@ export interface ResolvedConfig {
   owners: string[] | null
   encoding: Encoding
   consoleLog: boolean
+  slashCommandName: string
   shellTimeout: number
   exitOnShutdown: boolean
   security: boolean

@@ -3,7 +3,8 @@ import { statusCommand } from './commands/root'
 import { Context } from './context'
 import { OwnerResolver } from './owners'
 import { SecretScrubber } from './security'
-import type { AnyClient, AnyMessage, JishakuConfig, ResolvedConfig } from './types'
+import { buildCodeModal, CODE_FIELD_ID, CODE_SUBCOMMANDS, subcommandFromModalId } from './slash'
+import type { AnyClient, AnyInteraction, AnyMessage, JishakuConfig, ResolvedConfig } from './types'
 import { escapeCodeblock, redactToken } from './util/format'
 
 /** A tracked, potentially long-running djsk command invocation. */
@@ -27,12 +28,33 @@ function splitCommand(rest: string): { name: string; rawArgs: string } {
   return { name: match[1], rawArgs: match[2] }
 }
 
+/**
+ * Translates a slash command's structured options back into the single `rawArgs` string
+ * command handlers expect, as if the equivalent text had been typed after the subcommand name.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: interaction option resolvers are duck-typed across libraries.
+function extractOptionArgs(raw: any, subcommand: string): string {
+  switch (subcommand) {
+    case 'cat':
+      return raw.options.getString('path') ?? ''
+    case 'curl':
+      return raw.options.getString('url') ?? ''
+    case 'cancel':
+      return raw.options.getString('index') ?? ''
+    case 'retain':
+      return raw.options.getString('toggle') ?? ''
+    default:
+      return ''
+  }
+}
+
 function resolveConfig(config: JishakuConfig): ResolvedConfig {
   return {
     prefix: config.prefix ?? '.',
     owners: config.owners ?? null,
     encoding: config.encoding ?? 'UTF-8',
     consoleLog: config.consoleLog ?? true,
+    slashCommandName: config.slashCommandName ?? 'jsk',
     shellTimeout: config.shellTimeout ?? 120_000,
     exitOnShutdown: config.exitOnShutdown ?? false,
     security: config.security ?? false,
@@ -140,20 +162,111 @@ export class Jishaku {
     if (!(await this.owners.isOwner(String(authorId)))) return
 
     const { name, rawArgs } = splitCommand(rest)
+    const source = { kind: 'message' as const, message }
 
     if (name === '') {
-      await this.run(new Context(this, message, '', ''), statusCommand)
+      await this.run(new Context(this, source, '', ''), statusCommand)
       return
     }
 
     const command = resolveCommand(name)
     if (!command) {
-      const ctx = new Context(this, message, name, rawArgs)
+      const ctx = new Context(this, source, name, rawArgs)
       await ctx.send(`Unknown command \`${name}\`. Try \`${this.config.prefix}jsk help\`.`)
       return
     }
 
-    await this.run(new Context(this, message, command.name, rawArgs), command.handler)
+    await this.run(new Context(this, source, command.name, rawArgs), command.handler)
+  }
+
+  /**
+   * Interaction handler. Pass every `interactionCreate` event here.
+   *
+   * Handles the `/jsk` (or configured `slashCommandName`) slash command and its subcommands,
+   * plus the code-input modals that `js`/`sh` show instead of taking a string option. Ignores
+   * anything else. Never throws — command errors are reported back through the interaction.
+   */
+  async onInteractionCreate(interaction: AnyInteraction): Promise<void> {
+    // biome-ignore lint/suspicious/noExplicitAny: interaction shapes are duck-typed across libraries.
+    const raw = interaction as any
+
+    const isModalSubmit =
+      typeof raw.isModalSubmit === 'function' ? raw.isModalSubmit() : raw.type === 5
+    if (isModalSubmit) {
+      await this.handleModalSubmit(raw)
+      return
+    }
+
+    const isChatInput =
+      typeof raw.isChatInputCommand === 'function'
+        ? raw.isChatInputCommand()
+        : typeof raw.isCommand === 'function'
+          ? raw.isCommand()
+          : raw.type === 2
+    if (!isChatInput || raw.commandName !== this.config.slashCommandName) return
+
+    const userId = raw.user?.id
+    if (!userId) return
+    if (!(await this.owners.isOwner(String(userId)))) {
+      try {
+        await raw.reply({ content: 'You are not allowed to use this command.', ephemeral: true })
+      } catch {
+        // ignore
+      }
+      return
+    }
+
+    const subcommand: string = raw.options.getSubcommand()
+
+    if (CODE_SUBCOMMANDS.has(subcommand)) {
+      await raw.showModal(buildCodeModal(subcommand as 'js' | 'sh'))
+      return
+    }
+
+    const source = { kind: 'interaction' as const, interaction: raw }
+    const rawArgs = extractOptionArgs(raw, subcommand)
+
+    if (subcommand === 'status') {
+      await this.deferAndRun(new Context(this, source, '', rawArgs), statusCommand)
+      return
+    }
+
+    const command = resolveCommand(subcommand)
+    if (!command) return // Shouldn't happen: Discord only sends subcommands we registered.
+
+    await this.deferAndRun(new Context(this, source, command.name, rawArgs), command.handler)
+  }
+
+  /** Handles the submission of a `js`/`sh` code-input modal shown by {@link onInteractionCreate}. */
+  private async handleModalSubmit(raw: AnyInteraction): Promise<void> {
+    // biome-ignore lint/suspicious/noExplicitAny: interaction shapes are duck-typed across libraries.
+    const modal = raw as any
+    const subcommand = subcommandFromModalId(modal.customId ?? '')
+    if (!subcommand) return
+
+    const userId = modal.user?.id
+    if (!userId) return
+    if (!(await this.owners.isOwner(String(userId)))) return
+
+    const command = resolveCommand(subcommand)
+    if (!command) return
+
+    const code: string = modal.fields.getTextInputValue(CODE_FIELD_ID)
+    const source = { kind: 'interaction' as const, interaction: modal }
+    await this.deferAndRun(new Context(this, source, command.name, code), command.handler)
+  }
+
+  /** Defers the interaction's reply, then runs `handler`, matching message-based error handling. */
+  private async deferAndRun(
+    ctx: Context,
+    handler: (ctx: Context) => Promise<void> | void,
+  ): Promise<void> {
+    try {
+      await ctx.interaction?.deferReply()
+    } catch {
+      // Already acknowledged (e.g. by a fast handler racing us); proceed regardless.
+    }
+    await this.run(ctx, handler)
   }
 
   /** Returns the text after the root command, or `null` if the message isn't a djsk invocation. */

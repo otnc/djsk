@@ -76,6 +76,7 @@ const jsCommand: Command = {
       ctx,
       message: guard(ctx.message),
       msg: guard(ctx.message),
+      interaction: guard(ctx.interaction),
       author: guard(ctx.author),
       channel: guard(ctx.channel),
       guild: ctx.guild,
