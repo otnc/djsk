@@ -11,11 +11,12 @@ const CAT_ARG = /^(?:\.\/+)?(.+?)(?:#L?(\d+)(?:-L?(\d+))?)?$/
 
 /** Sends text as a plain codeblock, falling back to a file attachment when it is large. */
 async function sendText(ctx: Context, content: string, filename: string): Promise<void> {
-  if (Buffer.byteLength(content, 'utf-8') > CODEBLOCK_BYTE_LIMIT) {
-    await ctx.send({ files: [toFile(filename, content)] })
+  const scrubbed = ctx.jsk.scrub(content)
+  if (Buffer.byteLength(scrubbed, 'utf-8') > CODEBLOCK_BYTE_LIMIT) {
+    await ctx.send({ files: [toFile(filename, scrubbed)] })
     return
   }
-  await ctx.sendCodeblock(content, '', filename)
+  await ctx.sendCodeblock(scrubbed, '', filename)
 }
 
 const catCommand: Command = {

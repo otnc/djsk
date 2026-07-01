@@ -17,6 +17,7 @@ const jsk = new Jishaku(client, {
   prefix: '.', // The root command becomes `.jsk`. Default: '.'
   // owners: ['957885295251034112'], // Optional; defaults to the application owner/team.
   encoding: 'UTF-8', // Use 'Shift_JIS' for Japanese Windows shell output.
+  // security: true, // Redact secrets (token, .env values, credentials) from all output.
 })
 
 client.once('ready', (readyClient) => {

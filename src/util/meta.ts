@@ -33,3 +33,21 @@ export async function detectLibrary(): Promise<LibraryInfo | null> {
   }
   return null
 }
+
+/**
+ * Loads the installed discord.js-compatible library's module namespace.
+ *
+ * Used by security mode to reach the library's exported classes for prototype guarding.
+ * Returns `null` if none can be resolved.
+ */
+export async function loadLibraryModule(): Promise<Record<string, unknown> | null> {
+  for (const name of LIBRARY_CANDIDATES) {
+    try {
+      const mod = (await import(name)) as Record<string, unknown> & { version?: string }
+      if (mod.version ?? (mod.default as { version?: string } | undefined)?.version) return mod
+    } catch {
+      // Not installed; try the next candidate.
+    }
+  }
+  return null
+}

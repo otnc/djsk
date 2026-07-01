@@ -1,5 +1,8 @@
 import type { Context } from '../context'
+import { installPrototypeGuards } from '../prototype-guard'
+import { guardOutbound } from '../security'
 import { inspectResult } from '../util/format'
+import { loadLibraryModule } from '../util/meta'
 import type { Command } from './registry'
 
 // The AsyncFunction constructor is not exposed globally; derive it once.
@@ -59,22 +62,38 @@ const jsCommand: Command = {
     }
 
     const jsk = ctx.jsk
+
+    // In security mode, hand the scope guarded objects so user code that sends/replies/edits
+    // (message, channel, DMs, interactions reachable through them) is scrubbed too.
+    const guard = (value: unknown): unknown =>
+      jsk.config.security && value && typeof value === 'object'
+        ? guardOutbound(value, (text) => jsk.scrub(text))
+        : value
+
     const scope: Record<string, unknown> = {
       client: ctx.client,
       bot: ctx.client,
       ctx,
-      message: ctx.message,
-      msg: ctx.message,
-      author: ctx.author,
-      channel: ctx.channel,
+      message: guard(ctx.message),
+      msg: guard(ctx.message),
+      author: guard(ctx.author),
+      channel: guard(ctx.channel),
       guild: ctx.guild,
       // biome-ignore lint/suspicious/noExplicitAny: client.user shape is stable.
-      me: (ctx.client as any).user,
+      me: guard((ctx.client as any).user),
       _: jsk.lastResult,
       vars: jsk.replVars,
     }
     const argNames = Object.keys(scope)
     const argValues = Object.values(scope)
+
+    // In security mode, also guard the library's outbound methods for the duration of the eval
+    // so arbitrary Discord calls (any channel/webhook/interaction, raw REST wrappers) are scrubbed.
+    let restoreGuards: (() => void) | null = null
+    if (jsk.config.security) {
+      const module = await loadLibraryModule()
+      if (module) restoreGuards = installPrototypeGuards(module, (text) => jsk.scrub(text))
+    }
 
     const task = jsk.submitTask('jsk js')
     try {
@@ -86,6 +105,7 @@ const jsCommand: Command = {
       await ctx.react('✅')
       await sendResult(ctx, result)
     } finally {
+      restoreGuards?.()
       jsk.removeTask(task)
     }
   },

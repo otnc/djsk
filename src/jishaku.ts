@@ -2,8 +2,9 @@ import { resolveCommand } from './commands/registry'
 import { statusCommand } from './commands/root'
 import { Context } from './context'
 import { OwnerResolver } from './owners'
+import { SecretScrubber } from './security'
 import type { AnyClient, AnyMessage, JishakuConfig, ResolvedConfig } from './types'
-import { escapeCodeblock } from './util/format'
+import { escapeCodeblock, redactToken } from './util/format'
 
 /** A tracked, potentially long-running djsk command invocation. */
 export interface CommandTask {
@@ -34,6 +35,9 @@ function resolveConfig(config: JishakuConfig): ResolvedConfig {
     consoleLog: config.consoleLog ?? true,
     shellTimeout: config.shellTimeout ?? 120_000,
     exitOnShutdown: config.exitOnShutdown ?? false,
+    security: config.security ?? false,
+    secretPatterns: config.secretPatterns ?? [],
+    secretValues: config.secretValues ?? [],
   }
 }
 
@@ -50,6 +54,7 @@ function resolveConfig(config: JishakuConfig): ResolvedConfig {
 export class Jishaku {
   readonly config: ResolvedConfig
   readonly owners: OwnerResolver
+  private readonly scrubber: SecretScrubber
 
   /** Whether REPL variable retention is enabled (`jsk retain`). */
   retain = false
@@ -67,10 +72,28 @@ export class Jishaku {
   ) {
     this.config = resolveConfig(config)
     this.owners = new OwnerResolver(client, this.config.owners)
+    this.scrubber = new SecretScrubber(client, {
+      patterns: this.config.secretPatterns,
+      values: this.config.secretValues,
+    })
 
     if (this.config.consoleLog) {
-      console.info(`[djsk] Initialized. Root command: ${this.config.prefix}jsk`)
+      const security = this.config.security ? ' (security mode ON)' : ''
+      console.info(`[djsk] Initialized. Root command: ${this.config.prefix}jsk${security}`)
     }
+  }
+
+  /**
+   * Redacts secrets from `text` before it is exposed anywhere.
+   *
+   * The Discord token is always redacted; when security mode is enabled, secret-like
+   * environment values, `.env` assignments and common credential formats are redacted too.
+   * All djsk output and logging funnels through this method.
+   */
+  scrub(text: string): string {
+    // biome-ignore lint/suspicious/noExplicitAny: token location is stable across libraries.
+    const out = redactToken(text, (this.client as any)?.token)
+    return this.config.security ? this.scrubber.scrub(out) : out
   }
 
   /** Currently tracked tasks, oldest first. */
@@ -154,9 +177,9 @@ export class Jishaku {
   }
 
   private async reportError(ctx: Context, error: unknown): Promise<void> {
-    if (this.config.consoleLog) console.error('[djsk] Command error:', error)
-    await ctx.react('‼️')
     const text = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    if (this.config.consoleLog) console.error('[djsk] Command error:', this.scrub(text))
+    await ctx.react('‼️')
     try {
       await ctx.sendCodeblock(escapeCodeblock(text), 'js', 'error.txt')
     } catch {

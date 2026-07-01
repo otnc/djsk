@@ -41,7 +41,8 @@ npm install discord.js
 
 ## Examples
 
-Full examples are in [examples/](./examples) (bot and selfbot).
+Full examples are in [examples/](./examples): [bot](./examples/bot.mjs), [selfbot](./examples/selfbot.mjs),
+and [security mode](./examples/security.mjs) (`security: true` vs `false`).
 
 ```js
 import { Client, GatewayIntentBits } from 'discord.js'
@@ -77,8 +78,57 @@ client.login(process.env.DISCORD_TOKEN)
 | `owners`         | `string[]` | *(auto)*   | Allowed user IDs. Omitted → application owner/team (or the selfbot user).   |
 | `encoding`       | `string`   | `'UTF-8'`  | Shell output decoding. `Shift_JIS` is supported natively.                   |
 | `consoleLog`     | `boolean`  | `true`     | Print init notices and command errors to the console.                       |
+| `security`       | `boolean`  | `false`    | Redact secrets from all output/logs (see below).                            |
+| `secretPatterns` | `RegExp[]` | `[]`       | Extra credential regexes to redact in security mode.                        |
+| `secretValues`   | `string[]` | `[]`       | Extra exact strings to redact in security mode.                             |
 | `shellTimeout`   | `number`   | `120000`   | Kill a `jsk sh` process after this many ms of inactivity.                   |
 | `exitOnShutdown` | `boolean`  | `false`    | Call `process.exit(0)` after `jsk shutdown` destroys the client.            |
+
+### Security mode
+
+The Discord token is **always** redacted from djsk's own output. Setting `security: true`
+additionally best-effort redacts, from everything djsk sends, replies with, edits, or logs —
+including `jsk js` results, `jsk cat` / `jsk curl` output (message and file attachments), and
+shell output:
+
+- secret-like `process.env` values (keys matching `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `API`, …);
+- `.env`-style assignments (`SECRET_KEY=...`), even when not loaded into the environment;
+- built-in credential formats — Discord tokens & webhook URLs, bearer tokens, PEM private keys.
+
+Provider-specific keys (AWS, GitHub, Slack, …) are intentionally **not** built in, to keep false
+positives low. Add the formats your bot handles via `secretPatterns` / `secretValues`:
+
+```js
+new Jishaku(client, {
+  security: true,
+  secretPatterns: [/\bAKIA[0-9A-Z]{16}\b/g, /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g],
+  secretValues: ['a-specific-key-you-want-gone'],
+})
+```
+
+**`jsk js` user code.** Because eval'd code can call Discord directly (e.g. `message.reply(...)`,
+`channel.send(...)`, `interaction.editReply(...)`) — bypassing djsk's own output path — security
+mode protects this in two layers, active only while an eval is running:
+
+1. The eval scope's `message`, `msg`, `channel`, `author` and `me` are Proxy-guarded, so their
+   response methods (and `channel`/DMs reached through them) scrub before sending.
+2. For anything reached another way (`client.channels.cache.get(id).send(...)`, a webhook, an
+   interaction, a fetched user, ...), djsk temporarily patches `send`/`reply`/`edit`/`editReply`/
+   `followUp`/`update` on the installed library's own exported classes for the duration of that
+   single eval, then restores the originals — regardless of how the object was obtained.
+   Gateway/IPC/shard-control methods that happen to share a name (e.g. `Shard.send`, any
+   `*Manager.edit`) are excluded so they aren't corrupted.
+
+Because layer 2 patches shared prototypes, any other message the bot happens to send *while that
+eval is running* is scrubbed too; the patch is removed as soon as the eval finishes. Calls that
+skip the library entirely (raw `fetch`/`client.rest` HTTP calls with a hand-built body) are still
+not covered — there is no method to intercept.
+
+> [!Warning]
+>
+> This is a heuristic safety net, not a guarantee. It favours over-redaction, so legitimate
+> output may occasionally be redacted too. Treat it as defense-in-depth, not a substitute for
+> not printing secrets in the first place.
 
 ## Commands
 

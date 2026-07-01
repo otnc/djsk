@@ -40,8 +40,7 @@ const shellCommand: Command = {
       const content = render()
       try {
         if (message) {
-          // biome-ignore lint/suspicious/noExplicitAny: edit exists on all supported Message types.
-          await (message as any).edit(content)
+          await ctx.edit(message, content)
         } else {
           message = await ctx.send(content)
         }

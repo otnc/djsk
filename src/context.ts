@@ -1,7 +1,8 @@
 import { type Codeblock, parseCodeblock } from './codeblock'
 import type { Jishaku } from './jishaku'
+import { type MessagePayload, scrubMessagePayload } from './security'
 import type { AnyClient, AnyMessage } from './types'
-import { MESSAGE_LIMIT, redactToken, toFile, wrapPages } from './util/format'
+import { MESSAGE_LIMIT, toFile, wrapPages } from './util/format'
 
 // djsk is duck-typed at runtime: the concrete shapes differ across discord.js
 // v13/v14 and the selfbot forks, so a single loose alias documents that intent
@@ -9,7 +10,7 @@ import { MESSAGE_LIMIT, redactToken, toFile, wrapPages } from './util/format'
 // biome-ignore lint/suspicious/noExplicitAny: intentional cross-library duck typing.
 type Loose = any
 
-type SendPayload = string | Record<string, Loose>
+type SendPayload = MessagePayload
 
 /**
  * The execution context handed to every command handler.
@@ -61,18 +62,29 @@ export class Context {
     return parseCodeblock(this.rawArgs)
   }
 
-  private get token(): string | null {
-    return (this.client as Loose).token ?? null
+  /**
+   * Redacts secrets from a message payload (its `content` and, in security mode, any text
+   * file attachments). Every outbound method funnels through here, so this is the single
+   * enforcement point for token/secret redaction.
+   */
+  private scrubPayload(payload: SendPayload): SendPayload {
+    // Scrub text file attachments only in security mode (avoids mangling binary uploads).
+    return scrubMessagePayload(payload, (text) => this.jsk.scrub(text), this.jsk.config.security)
   }
 
   /** Sends a message to the invoking channel and returns it. */
   async send(payload: SendPayload): Promise<AnyMessage> {
-    return this.channel.send(payload)
+    return this.channel.send(this.scrubPayload(payload))
   }
 
   /** Replies to the invoking message and returns the reply. */
   async reply(payload: SendPayload): Promise<AnyMessage> {
-    return (this.message as Loose).reply(payload)
+    return (this.message as Loose).reply(this.scrubPayload(payload))
+  }
+
+  /** Edits a previously sent message, applying the same redaction as {@link send}. */
+  async edit(message: AnyMessage, payload: SendPayload): Promise<AnyMessage> {
+    return (message as Loose).edit(this.scrubPayload(payload))
   }
 
   /** Adds a reaction to the invoking message, swallowing failures (e.g. missing permissions). */
@@ -89,7 +101,7 @@ export class Context {
    * when the content exceeds Discord's message limit. Mirrors jishaku's `jsk py` handling.
    */
   async sendResult(text: string, filename = 'output.txt'): Promise<AnyMessage> {
-    const content = redactToken(text.length === 0 ? '​' : text, this.token)
+    const content = this.jsk.scrub(text.length === 0 ? '​' : text)
     if (content.length <= MESSAGE_LIMIT) {
       return this.send({ content, allowedMentions: { parse: [] } })
     }
@@ -101,7 +113,7 @@ export class Context {
    * too long, and falls back to a file attachment when it would need many pages.
    */
   async sendCodeblock(text: string, language = '', filename = 'output.txt'): Promise<void> {
-    const content = redactToken(text, this.token)
+    const content = this.jsk.scrub(text)
     const pages = wrapPages(content, { prefix: `\`\`\`${language}`, suffix: '```', maxSize: 1980 })
 
     if (pages.length > 4) {

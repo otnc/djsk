@@ -22,16 +22,15 @@ const pingCommand: Command = {
 
     for (let i = 0; i < 4; i++) {
       const before = performance.now()
-      // biome-ignore lint/suspicious/noExplicitAny: edit exists on all supported Message types.
-      await (message as any).edit(`Calculating round-trip time... (${i + 1}/4)`)
+      await ctx.edit(message, `Calculating round-trip time... (${i + 1}/4)`)
       readings.push(performance.now() - before)
     }
 
     const { mean, stddev } = meanStddev(readings)
     const wsText = wsPing >= 0 ? `${wsPing}ms` : 'unavailable'
 
-    // biome-ignore lint/suspicious/noExplicitAny: edit exists on all supported Message types.
-    await (message as any).edit(
+    await ctx.edit(
+      message,
       `🏓\nWebsocket latency: ${wsText}\nRound-trip: ${mean.toFixed(2)} ± ${stddev.toFixed(2)}ms`,
     )
   },

@@ -28,6 +28,21 @@ export interface JishakuConfig {
   encoding?: Encoding
   /** Whether djsk prints init/update notices and errors to the console. Default: `true`. */
   consoleLog?: boolean
+  /**
+   * Security mode. When `true`, djsk best-effort redacts secrets — the Discord token,
+   * secret-like `process.env` values, `.env` assignments and common credential formats —
+   * from everything it sends, replies with, edits, or logs (including `jsk js` results,
+   * `jsk cat`/`jsk curl` output and shell output). Default: `false`.
+   */
+  security?: boolean
+  /**
+   * Extra credential regexes to redact in security mode (e.g. provider-specific API key
+   * formats such as AWS/GitHub). The built-in patterns only cover Discord tokens & webhooks,
+   * bearer tokens and PEM private keys, so add the formats your bot handles here.
+   */
+  secretPatterns?: RegExp[]
+  /** Extra exact strings to always redact in security mode. */
+  secretValues?: string[]
   /** Timeout (ms) after which a silent `jsk sh` process is killed. Default: `120000`. */
   shellTimeout?: number
   /** Whether `jsk shutdown` calls `process.exit(0)` after destroying the client. Default: `false`. */
@@ -42,4 +57,7 @@ export interface ResolvedConfig {
   consoleLog: boolean
   shellTimeout: number
   exitOnShutdown: boolean
+  security: boolean
+  secretPatterns: RegExp[]
+  secretValues: string[]
 }
