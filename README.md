@@ -32,6 +32,7 @@ The original jishaku (Discord.py) is [here](https://github.com/Gorialis/jishaku)
   commands, with `js`/`sh` prompting a code-input modal instead of a plain string option.
 - **Cross-library** — one API for discord.js v13/v14 and the selfbot forks; no builder-class lock-in.
 - **Zero runtime dependencies** — discord.js is a peer dependency; Shift_JIS and HTTP use Node built-ins.
+- **`djsk create`** — an interactive CLI that scaffolds a ready-to-run bot or selfbot project.
 
 ## Installation
 
@@ -40,6 +41,25 @@ npm install djsk
 # discord.js (or a supported fork) is a peer dependency:
 npm install discord.js
 ```
+
+## CLI / Project Scaffolding
+
+Starting a new project? `npx djsk create` (or `pnpm dlx djsk create`) scaffolds one interactively:
+
+```sh
+npx djsk create my-bot
+# or, to be prompted for the directory:
+npx djsk create
+```
+
+It asks whether you're setting up a **bot** or a **selfbot**, JavaScript or TypeScript, a Discord
+token (optional), whether to enable [security mode](#security-mode), and owner ID(s) (optional) —
+then, for bots, the discord.js version and command mode (slash + text / slash only / text only),
+fetching the application ID for `.env` when slash commands are included. It writes `package.json`,
+`.env`, `.gitignore`, the entry file, a `tsconfig.json` (TypeScript projects), and a standalone
+`deploy-commands` script (slash-inclusive bot projects), then installs dependencies with whichever
+package manager invoked it (npm/pnpm/yarn/bun). Anything you skipped (token, owner IDs, the
+application ID) is listed as a **Next Steps** checklist at the end.
 
 ## Examples
 
