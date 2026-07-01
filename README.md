@@ -80,6 +80,8 @@ client.on('messageCreate', (message) => jsk.onMessageCreated(message))
 client.login(process.env.DISCORD_TOKEN)
 ```
 
+> [!Caution]
+>   
 > You may use djsk on a user account (selfbot) via a fork. Automating a user account is prohibited by the [Discord ToS](https://discord.com/terms) and can lead to account termination.  
 > Use at your own risk — the authors take no responsibility for banned accounts.
 
