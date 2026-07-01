@@ -9,13 +9,13 @@ The original jishaku (Discord.py) is [here](https://github.com/Gorialis/jishaku)
 - [Discord.js](https://www.npmjs.com/package/discord.js)
   - v14
   - v13
-    Recommend: `v13-lts` (`13.17.1`)
+    - Recommend: `v13-lts` (`13.17.1`)
 - [discord.js-selfbot-v13](https://www.npmjs.com/package/discord.js-selfbot-v13)
   - All
-    Recommend: `latest`
+    - Recommend: `latest`
 - [discord.js-selfbot-youtsuho-v13](https://www.npmjs.com/package/discord.js-selfbot-youtsuho-v13)
   - All
-    Recommend: `latest`
+    - Recommend: `latest`
 
 > [!Note]
 >   
