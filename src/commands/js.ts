@@ -1,3 +1,4 @@
+import vm from 'node:vm'
 import type { Context } from '../context'
 import { installPrototypeGuards, installRestGuard } from '../prototype-guard'
 import { guardOutbound } from '../security'
@@ -5,26 +6,66 @@ import { inspectResult } from '../util/format'
 import { loadLibraryModule } from '../util/meta'
 import type { Command } from './registry'
 
-// The AsyncFunction constructor is not exposed globally; derive it once.
-const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
-  ...args: string[]
-) => (...values: unknown[]) => Promise<unknown>
-
 const ENABLE = new Set(['on', 'true', 't', 'yes', 'y', '1', 'enable'])
 const DISABLE = new Set(['off', 'false', 'f', 'no', 'n', '0', 'disable'])
 
+const GUARDED_CHILD_PROCESS_METHODS = new Set(['execSync', 'execFileSync', 'spawnSync'])
+
 /**
- * Compiles user code into an async function.
+ * Wraps `fn` (one of `child_process`'s `execSync`/`execFileSync`/`spawnSync`) so a call that
+ * doesn't specify its own `timeout` gets `timeoutMs` as a default, without overriding a value
+ * the eval's own code explicitly passed.
+ *
+ * These three are the common way eval'd code blocks on a *native* call rather than JS
+ * execution — and unlike a synchronous JS loop, {@link EvalTimedOutError}'s `vm.Script` timeout
+ * can't preempt them (V8's execution watchdog only checks in during actual bytecode execution,
+ * not while parked waiting on a native/libuv call to return; confirmed experimentally). They
+ * do, however, each already support their own native `timeout` option (which kills the child
+ * and unblocks the parent) — this just makes sure one is always set.
+ *
+ * Doesn't help with other blocking natives with no such option (`fs.readFileSync` hung on a
+ * slow pipe, a bare `Atomics.wait()`, ...) — those remain a real, if rarer, gap.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: forwarding execSync/execFileSync/spawnSync's overloaded signatures verbatim.
+function withDefaultTimeout(fn: (...args: any[]) => any, timeoutMs: number) {
+  // biome-ignore lint/suspicious/noExplicitAny: see above.
+  return (...args: any[]) => {
+    const last = args[args.length - 1]
+    if (last !== null && typeof last === 'object' && !Array.isArray(last)) {
+      if (last.timeout === undefined) args[args.length - 1] = { ...last, timeout: timeoutMs }
+    } else {
+      args.push({ timeout: timeoutMs })
+    }
+    return fn(...args)
+  }
+}
+
+/**
+ * Compiles user code into a `vm.Script` whose top-level statement immediately invokes an
+ * async function taking `argNames` as parameters, applied to whatever's stashed at
+ * `globalThis[argsKey]` at call time (see the handler below).
+ *
+ * Run via `runInThisContext()` — the *current* realm, not a new sandboxed one — so it behaves
+ * exactly like the plain `AsyncFunction` this replaces: full access to Node's ambient globals,
+ * and live object references (client, message, ...) passed as args work unchanged, with no
+ * serialization boundary. The difference is that `Script#runInThisContext` accepts a
+ * `timeout`, which `AsyncFunction` calls never could — see {@link EvalTimedOutError}.
  *
  * First tries to treat the whole input as a single expression (auto-returning its
  * value, e.g. `1 + 1`); if that isn't valid syntax, falls back to a statement body
  * where the user is expected to `return` explicitly.
  */
-function compile(code: string, argNames: string[]): (...values: unknown[]) => Promise<unknown> {
+function compile(code: string, argNames: string[], argsKey: string): vm.Script {
+  const params = argNames.join(', ')
+  const invocation = `.apply(null, globalThis[${JSON.stringify(argsKey)}])`
   try {
-    return new AsyncFunction(...argNames, `return (${code}\n);`)
+    return new vm.Script(`(async function (${params}) {\nreturn (${code}\n);\n})${invocation}`, {
+      filename: 'jsk js',
+    })
   } catch {
-    return new AsyncFunction(...argNames, code)
+    return new vm.Script(`(async function (${params}) {\n${code}\n})${invocation}`, {
+      filename: 'jsk js',
+    })
   }
 }
 
@@ -37,6 +78,73 @@ function isMessage(value: any): boolean {
     typeof value.react === 'function' &&
     ('url' in value || 'id' in value)
   )
+}
+
+/** Thrown to unwind a `jsk js` eval that was stopped via `jsk cancel`. */
+class EvalCancelledError extends Error {
+  constructor() {
+    super('Cancelled via jsk cancel.')
+    this.name = 'EvalCancelledError'
+  }
+}
+
+/**
+ * Thrown when a synchronous stretch of a `jsk js` eval (e.g. a bare `while (true) {}`) ran
+ * longer than `evalTimeout` and was forcibly terminated by V8's execution watchdog — confirmed
+ * experimentally to genuinely preempt a tight JS loop, unlike JS-level cooperative cancellation
+ * (V8 checks for a pending termination request at loop back-edges/calls during actual bytecode
+ * execution, so this doesn't require the running code to yield).
+ *
+ * Unlike {@link EvalCancelledError}, this can't be triggered by `jsk cancel` reactively —
+ * while the eval is stuck in synchronous code, the whole bot process is blocked (nothing else
+ * runs either, including processing a cancel request), so there's no "react to the command"
+ * moment available. `evalTimeout` is a hard cap enforced up front instead.
+ *
+ * Known gap: this covers synchronous *JS* execution, not a blocking *native* call the code
+ * might make (e.g. `child_process.execSync` on a slow command) — confirmed experimentally that
+ * such a call is NOT interrupted by the timeout, since V8's watchdog only preempts during
+ * bytecode execution, not while parked waiting on a native/libuv call to return. Short of
+ * restarting the process, there's currently no way around that; it would need running the eval
+ * in a separate thread that can be forcibly terminated (`node:worker_threads`), which isn't
+ * viable here without losing direct, synchronous access to the live client/message/channel
+ * objects `jsk js` is built around (they aren't structured-cloneable across a worker boundary).
+ */
+class EvalTimedOutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Synchronous execution exceeded ${timeoutMs}ms and was terminated.`)
+    this.name = 'EvalTimedOutError'
+  }
+}
+
+/**
+ * Resolves/rejects with `promise`, but rejects with {@link EvalCancelledError} as soon as
+ * `signal` aborts — whichever comes first.
+ *
+ * This only wins the race at an `await` point in the running eval (or in a Promise chain it
+ * started, e.g. a pending `fetch`) — it doesn't help with a synchronous runaway (`while (true)
+ * {}` blocks the event loop entirely, so nothing — this included — runs until it returns
+ * control); {@link EvalTimedOutError} covers that case instead. This one covers the far more
+ * common "hang" shape: an eval stuck awaiting something that never resolves (an infinite retry
+ * loop with an `await` in it, a Discord call that never comes back, `await new Promise(() =>
+ * {})`, ...).
+ */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new EvalCancelledError())
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new EvalCancelledError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
 }
 
 type WriteFn = typeof process.stdout.write
@@ -132,6 +240,8 @@ const jsCommand: Command = {
         ? guardOutbound(value, (text) => jsk.scrub(text))
         : value
 
+    const controller = new AbortController()
+
     const scope: Record<string, unknown> = {
       client: ctx.client,
       bot: ctx.client,
@@ -146,6 +256,35 @@ const jsCommand: Command = {
       me: guard((ctx.client as any).user),
       _: jsk.lastResult,
       vars: jsk.replVars,
+      // Exposed so cooperative user code can pass it along (e.g. `fetch(url, { signal })`) or
+      // poll `signal.aborted` in a loop, for cleaner cancellation than raceAbort alone gives.
+      signal: controller.signal,
+      // Bare `import(...)` inside a vm.Script requires an opt-in `importModuleDynamically`
+      // callback, which itself requires Node's --experimental-vm-modules flag — not something
+      // every djsk consumer's process can be expected to run with. This closure lives outside
+      // the vm-executed code (in this file's normal module scope), so it can freely `import()`
+      // without that restriction; eval'd code gets the same capability via `dynamicImport(...)`.
+      //
+      // `node:child_process` specifically comes back Proxy-wrapped so execSync/execFileSync/
+      // spawnSync default to `evalTimeout` (see withDefaultTimeout) — this is the actual
+      // interception point, not a global monkeypatch of the module: mutating the module object
+      // reached via a default import (`import cp from 'node:child_process'`) does NOT affect
+      // what a *named*/namespace import (what `dynamicImport` returns) sees, confirmed
+      // experimentally — Node's synthetic ESM bindings for built-ins aren't reliably live
+      // across that boundary, so patching has to happen right here instead.
+      dynamicImport: async (specifier: string) => {
+        const imported = await import(specifier)
+        if (specifier !== 'node:child_process' && specifier !== 'child_process') return imported
+
+        return new Proxy(imported, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver)
+            return typeof prop === 'string' && GUARDED_CHILD_PROCESS_METHODS.has(prop)
+              ? withDefaultTimeout(value, jsk.config.evalTimeout)
+              : value
+          },
+        })
+      },
     }
     const argNames = Object.keys(scope)
     const argValues = Object.values(scope)
@@ -164,7 +303,10 @@ const jsCommand: Command = {
       }
     }
 
-    const task = jsk.submitTask('jsk js')
+    const task = jsk.submitTask('jsk js', () => controller.abort())
+    // Unique per invocation (task.index is a monotonic counter) so concurrent evals can't
+    // clobber each other's stashed arguments on the shared global object.
+    const argsKey = `__djsk_eval_args_${task.index}__`
     // In security mode, also scrub what actually reaches the real terminal (not just the copy
     // captured for Discord) — otherwise a `console.log(client.token)` still leaks it into the
     // bot's own local logs, which may be shipped to a third-party service the operator doesn't
@@ -172,14 +314,55 @@ const jsCommand: Command = {
     // scrubbing is opt-in" convention) so normal debugging output isn't silently altered.
     const capture = captureTerminalOutput(jsk.config.security ? (text) => jsk.scrub(text) : null)
     try {
-      const fn = compile(code, argNames)
-      const result = await fn(...argValues)
+      // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for vm.runInThisContext, deleted immediately below.
+      ;(globalThis as any)[argsKey] = argValues
+
+      let scriptResult: unknown
+      try {
+        const script = compile(code, argNames, argsKey)
+        scriptResult = script.runInThisContext({
+          timeout: jsk.config.evalTimeout,
+          filename: 'jsk js',
+        })
+      } catch (error) {
+        const errorCode = (error as NodeJS.ErrnoException)?.code
+        throw errorCode === 'ERR_SCRIPT_EXECUTION_TIMEOUT'
+          ? new EvalTimedOutError(jsk.config.evalTimeout)
+          : error
+      } finally {
+        // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for vm.runInThisContext.
+        delete (globalThis as any)[argsKey]
+      }
+
+      const result = await raceAbort(Promise.resolve(scriptResult), controller.signal)
       const terminalOutput = capture.restore()
 
       if (jsk.retain) jsk.lastResult = result
 
       await ctx.react('✅')
       await sendResult(ctx, result, terminalOutput)
+    } catch (error) {
+      const terminalOutput = capture.restore()
+
+      if (error instanceof EvalCancelledError) {
+        // `jsk cancel` already sends its own confirmation — report only whatever terminal
+        // output the eval produced before it was stopped, if any, rather than also surfacing
+        // this as a generic error through Jishaku's catch-and-report handler.
+        await ctx.react('🛑')
+        if (terminalOutput) await sendResult(ctx, undefined, terminalOutput)
+        return
+      }
+
+      if (error instanceof EvalTimedOutError) {
+        await ctx.react('⏱️')
+        const parts = terminalOutput
+          ? [`\`\`\`\n${terminalOutput}\n\`\`\``, error.message]
+          : [error.message]
+        await ctx.sendResult(parts.join('\n'), 'output.js')
+        return
+      }
+
+      throw error
     } finally {
       capture.restore()
       restoreRestGuard?.()
