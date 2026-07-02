@@ -21,6 +21,8 @@ interface CommonAnswers {
   security: boolean
   /** Empty when the owner id prompt was skipped. */
   owners: string[]
+  /** Command prefix for text-triggered commands (the root command is `${prefix}jsk`). Default: `.` */
+  prefix: string
 }
 
 export interface BotAnswers extends CommonAnswers {
