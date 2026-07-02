@@ -182,6 +182,19 @@ describe('jsk js — cancellation', () => {
   })
 })
 
+describe('jsk js — dynamicImport', () => {
+  it('lets eval code dynamically import a module without --experimental-vm-modules', async () => {
+    const { ctx, send } = makeContext(
+      'const os = await dynamicImport("node:os"); return typeof os.platform()',
+    )
+
+    await jsCommand.handler(ctx)
+
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('string')
+  })
+})
+
 describe('jsk js — synchronous runaway (evalTimeout)', () => {
   it('terminates a bare while(true) loop instead of hanging the process forever', async () => {
     const jsk = makeJsk({ evalTimeout: 100 })

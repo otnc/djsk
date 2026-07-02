@@ -59,12 +59,24 @@ class EvalCancelledError extends Error {
 
 /**
  * Thrown when a synchronous stretch of a `jsk js` eval (e.g. a bare `while (true) {}`) ran
- * longer than `evalTimeout` and was forcibly terminated by V8's execution watchdog.
+ * longer than `evalTimeout` and was forcibly terminated by V8's execution watchdog — confirmed
+ * experimentally to genuinely preempt a tight JS loop, unlike JS-level cooperative cancellation
+ * (V8 checks for a pending termination request at loop back-edges/calls during actual bytecode
+ * execution, so this doesn't require the running code to yield).
  *
  * Unlike {@link EvalCancelledError}, this can't be triggered by `jsk cancel` reactively —
  * while the eval is stuck in synchronous code, the whole bot process is blocked (nothing else
  * runs either, including processing a cancel request), so there's no "react to the command"
  * moment available. `evalTimeout` is a hard cap enforced up front instead.
+ *
+ * Known gap: this covers synchronous *JS* execution, not a blocking *native* call the code
+ * might make (e.g. `child_process.execSync` on a slow command) — confirmed experimentally that
+ * such a call is NOT interrupted by the timeout, since V8's watchdog only preempts during
+ * bytecode execution, not while parked waiting on a native/libuv call to return. Short of
+ * restarting the process, there's currently no way around that; it would need running the eval
+ * in a separate thread that can be forcibly terminated (`node:worker_threads`), which isn't
+ * viable here without losing direct, synchronous access to the live client/message/channel
+ * objects `jsk js` is built around (they aren't structured-cloneable across a worker boundary).
  */
 class EvalTimedOutError extends Error {
   constructor(timeoutMs: number) {
@@ -78,11 +90,12 @@ class EvalTimedOutError extends Error {
  * `signal` aborts — whichever comes first.
  *
  * This only wins the race at an `await` point in the running eval (or in a Promise chain it
- * started, e.g. a pending `fetch`): JS can't preempt a synchronous stretch of code (an
- * unconditional `while (true) {}` blocks the event loop entirely, so nothing — this included —
- * runs until it returns control). It does, however, cover the far more common "hang" shape:
- * an eval stuck awaiting something that never resolves (an infinite retry loop with an
- * `await` in it, a Discord call that never comes back, `await new Promise(() => {})`, ...).
+ * started, e.g. a pending `fetch`) — it doesn't help with a synchronous runaway (`while (true)
+ * {}` blocks the event loop entirely, so nothing — this included — runs until it returns
+ * control); {@link EvalTimedOutError} covers that case instead. This one covers the far more
+ * common "hang" shape: an eval stuck awaiting something that never resolves (an infinite retry
+ * loop with an `await` in it, a Discord call that never comes back, `await new Promise(() =>
+ * {})`, ...).
  */
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new EvalCancelledError())
@@ -208,6 +221,12 @@ const jsCommand: Command = {
       // Exposed so cooperative user code can pass it along (e.g. `fetch(url, { signal })`) or
       // poll `signal.aborted` in a loop, for cleaner cancellation than raceAbort alone gives.
       signal: controller.signal,
+      // Bare `import(...)` inside a vm.Script requires an opt-in `importModuleDynamically`
+      // callback, which itself requires Node's --experimental-vm-modules flag — not something
+      // every djsk consumer's process can be expected to run with. This closure lives outside
+      // the vm-executed code (in this file's normal module scope), so it can freely `import()`
+      // without that restriction; eval'd code gets the same capability via `dynamicImport(...)`.
+      dynamicImport: (specifier: string) => import(specifier),
     }
     const argNames = Object.keys(scope)
     const argValues = Object.values(scope)

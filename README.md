@@ -173,16 +173,18 @@ All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js 1 + 1`) or `/js
 
 The following variables are injected into the evaluation scope:
 
-`client` / `bot`, `ctx`, `message` / `msg`, `interaction`, `author`, `channel`, `guild`, `me`, `_` (last result), `vars` (a persistent object when retention is on), and `signal` (an `AbortSignal`, see below).
+`client` / `bot`, `ctx`, `message` / `msg`, `interaction`, `author`, `channel`, `guild`, `me`, `_` (last result), `vars` (a persistent object when retention is on), `signal` (an `AbortSignal`, see below), and `dynamicImport` (see below).
 
 `message`/`msg` are `null` and `interaction` is set when `js`/`sh` was invoked via slash command (through the code-input modal) instead of a text command, and vice versa.
+
+`jsk js` runs eval'd code via `vm.Script#runInThisContext()` rather than a plain function, in the *current* realm — Node's ambient globals and live object references (client, message, ...) work exactly as if it were a plain function, but bare `import(...)` doesn't (it needs `--experimental-vm-modules`, which not every djsk consumer's process runs with). Use the injected `dynamicImport(specifier)` instead — it's a normal function defined outside the vm boundary, so it isn't affected by that restriction: `const os = await dynamicImport('node:os')`.
 
 **Cancelling a running eval.** `jsk js` registers itself in `jsk tasks`, and is cancellable two ways:
 
 - `jsk cancel` — stops an eval stuck *awaiting* something (an infinite retry loop with an `await` in it, a Discord call that never resolves, `await new Promise(() => {})`, ...). `signal` is provided so eval'd code can cooperate explicitly too — pass it to anything that accepts an `AbortSignal` (`fetch(url, { signal })`) or poll `signal.aborted` inside a loop.
-- `evalTimeout` — a hard cap (ms, default `10000`) on any single *synchronous* stretch of the eval, e.g. a bare `while (true) {}`. This case can't be helped by `jsk cancel`: while the eval is stuck in synchronous code, the entire bot process is blocked and can't process *any* Discord events, including a cancel request — so it's enforced automatically instead, terminating the eval once it's exceeded.
+- `evalTimeout` — a hard cap (ms, default `10000`) on any single *synchronous* stretch of the eval, e.g. a bare `while (true) {}`. This case can't be helped by `jsk cancel`: while the eval is stuck in synchronous code, the entire bot process is blocked and can't process *any* Discord events, including a cancel request — so it's enforced automatically instead (via V8's execution watchdog, which can genuinely preempt a tight loop), terminating the eval once it's exceeded.
 
-Between the two, a `jsk js` eval can always be recovered from without restarting the bot.
+Between the two, a `jsk js` eval can (almost) always be recovered from without restarting the bot — the one gap is a *blocking native call* (e.g. `child_process.execSync` on a slow command): `evalTimeout` only preempts synchronous *JS* execution, not time spent parked in a native/libuv call, so that case still requires a restart.
 
 > [!Note]
 >   
