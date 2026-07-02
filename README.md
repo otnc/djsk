@@ -1,5 +1,8 @@
 # djsk
 
+[![npm version](https://img.shields.io/npm/v/djsk.svg)](https://www.npmjs.com/package/djsk) [![npm downloads](https://img.shields.io/npm/dm/djsk.svg)](https://www.npmjs.com/package/djsk) [![CI](https://github.com/otnc/djsk/actions/workflows/ci.yml/badge.svg)](https://github.com/otnc/djsk/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/djsk.svg)](./LICENSE)
+[![discord.js](https://img.shields.io/badge/discord.js-v13%20%7C%20v14-5865F2?logo=discorddotjs&logoColor=white)](https://www.npmjs.com/package/discord.js) [![discord.js-selfbot-v13](https://img.shields.io/badge/discord.js--selfbot--v13-supported-5865F2)](https://www.npmjs.com/package/discord.js-selfbot-v13) [![discord.js-selfbot-youtsuho-v13](https://img.shields.io/badge/discord.js--selfbot--youtsuho--v13-supported-5865F2)](https://www.npmjs.com/package/discord.js-selfbot-youtsuho-v13)
+
 Jishaku for Discord.js — a debugging and diagnostics toolkit for your bot.
 
 The original jishaku (Discord.py) is [here](https://github.com/Gorialis/jishaku).
@@ -29,9 +32,11 @@ The original jishaku (Discord.py) is [here](https://github.com/Gorialis/jishaku)
 - **`jsk cat` / `jsk curl`** — Read local files (with line spans) or remote text resources.
 - **Diagnostics** — `jsk` status summary, `jsk ping` round-trip timing, `jsk tasks` / `jsk cancel`.
 - **Slash commands** — `/jsk <subcommand>` (bot use, not selfbots); the same handlers as the text commands, with `js`/`sh` prompting a code-input modal instead of a plain string option.
+- **Pagination** — output over Discord's 2000-character limit is split into pages you browse with ⬅️/➡️ reactions, instead of being truncated or dumped to a file.
 - **Cross-library** — one API for discord.js v13/v14 and the selfbot forks; no builder-class lock-in.
 - **Zero runtime dependencies** — discord.js is a peer dependency; Shift_JIS and HTTP use Node built-ins.
 - **`djsk create`** — an interactive CLI that scaffolds a ready-to-run bot or selfbot project.
+- **Update notices** — when `consoleLog` is on, djsk checks once at startup (non-blocking, never throws) whether a newer version is published and logs a one-line notice if so.
 
 ## Installation
 
@@ -51,7 +56,7 @@ npx djsk create my-bot
 npx djsk create
 ```
 
-It asks whether you're setting up a **bot** or a **selfbot**, JavaScript or TypeScript, a Discord token (optional), whether to enable [security mode](#security-mode), and owner ID(s) (optional) — then, for bots, the discord.js version and command mode (slash + text / slash only / text only), fetching the application ID for `.env` when slash commands are included. It writes `package.json`, `.env`, `.gitignore`, the entry file, a `tsconfig.json` (TypeScript projects), and a standalone `deploy-commands` script (slash-inclusive bot projects), then installs dependencies with whichever package manager invoked it (npm/pnpm/yarn/bun). Anything you skipped (token, owner IDs, the application ID) is listed as a **Next Steps** checklist at the end.
+It asks whether you're setting up a **bot** or a **selfbot**, JavaScript or TypeScript, a Discord token (optional), whether to enable [security mode](#security-mode), owner ID(s) (optional), and the command prefix (default `.`) — then, for bots, the discord.js version and command mode (slash + text / slash only / text only), fetching the application ID for `.env` when slash commands are included; for selfbots, which fork to use (`discord.js-selfbot-v13` or `discord.js-selfbot-youtsuho-v13`). It writes `package.json`, `.env`, `.gitignore`, the entry file, a `tsconfig.json` (TypeScript projects), and a standalone `deploy-commands` script (slash-inclusive bot projects), then installs dependencies with whichever package manager invoked it (npm/pnpm/yarn/bun). Anything you skipped (token, owner IDs, the application ID) is listed as a **Next Steps** checklist at the end.
 
 ## Examples
 
@@ -67,6 +72,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent, // Required to read command content.
+    GatewayIntentBits.GuildMessageReactions, // Required for ⬅️/➡️ pagination on long output.
   ],
 })
 
@@ -120,12 +126,13 @@ new Jishaku(client, {
 })
 ```
 
-**`jsk js` user code.** Because eval'd code can call Discord directly (e.g. `message.reply(...)`, `channel.send(...)`, `interaction.editReply(...)`) — bypassing djsk's own output path — security mode protects this in two layers, active only while an eval is running:
+**`jsk js` user code.** Because eval'd code can call Discord directly (e.g. `message.reply(...)`, `channel.send(...)`, `interaction.editReply(...)`) — bypassing djsk's own output path — security mode protects this in three layers, active only while an eval is running:
 
 1. The eval scope's `message`, `msg`, `channel`, `author` and `me` are Proxy-guarded, so their response methods (and `channel`/DMs reached through them) scrub before sending.
 2. For anything reached another way (`client.channels.cache.get(id).send(...)`, a webhook, an interaction, a fetched user, ...), djsk temporarily patches `send`/`reply`/`edit`/`editReply`/ `followUp`/`update` on the installed library's own exported classes for the duration of that single eval, then restores the originals — regardless of how the object was obtained. Gateway/IPC/shard-control methods that happen to share a name (e.g. `Shard.send`, any `*Manager.edit`) are excluded so they aren't corrupted.
+3. On discord.js v14 (not v13 or the selfbot forks — they route requests through an older builder with no equivalent choke point), `client.rest.get/post/put/patch/delete(...)` all funnel through one method internally, so djsk patches just that one to scrub `body.content` too — narrowing, though not fully closing, layer 2's gap for raw REST calls.
 
-Because layer 2 patches shared prototypes, any other message the bot happens to send *while that eval is running* is scrubbed too; the patch is removed as soon as the eval finishes. Calls that skip the library entirely (raw `fetch`/`client.rest` HTTP calls with a hand-built body) are still not covered — there is no method to intercept.
+Because layers 2 and 3 patch shared prototypes, any other message the bot happens to send *while that eval is running* is scrubbed too; the patches are removed as soon as the eval finishes. Only a hand-built raw `fetch()` call using the token directly — skipping the library entirely — is still not covered; there is no method to intercept there.
 
 > [!Warning]
 >   
@@ -170,6 +177,8 @@ client.on('interactionCreate', (interaction) => jsk.onInteractionCreate(interact
 ## Commands
 
 All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js 1 + 1`) or `/jsk <command>`.
+
+Non-owners get no reaction at all when using text commands (djsk doesn't even reveal it's listening), and an ephemeral "You are not allowed to use this command." reply when using the slash command.
 
 | Command                    | Description                                                          |
 | -------------------------- | ------------------------------------------------------------------- |

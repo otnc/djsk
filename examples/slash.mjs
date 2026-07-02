@@ -8,7 +8,7 @@ import { Client, GatewayIntentBits } from 'discord.js'
 import { getSlashCommandData, Jishaku } from 'djsk'
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessageReactions], // Reactions: for ⬅️/➡️ pagination on long output.
 })
 
 const jsk = new Jishaku(client, {
