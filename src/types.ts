@@ -21,6 +21,23 @@ export type AnyInteraction = Interaction
 /** Text decoding used when reading shell output. */
 export type Encoding = 'UTF-8' | 'Shift_JIS' | (string & {})
 
+/**
+ * Overrides which shell/terminal `jsk sh` spawns, instead of djsk's auto-detected default
+ * (PowerShell, falling back to `cmd`, on Windows; `$SHELL`, falling back to `/bin/bash`,
+ * everywhere else). Useful for PowerShell Core (`pwsh`), a specific shell (`zsh`, `fish`, ...),
+ * a non-default install path, WSL, or a sandboxed/containerized shell.
+ */
+export interface ShellOverride {
+  /** The command to spawn (e.g. `'pwsh'`, `'zsh'`, or a full path). */
+  command: string
+  /** Arguments passed before the code to run — the code itself is appended as the final argument. */
+  args?: string[]
+  /** Prompt shown before the command in the rendered output. Default: `'$'`. */
+  ps1?: string
+  /** Codeblock language used for the rendered output's syntax highlighting. Default: `'ansi'`. */
+  highlight?: string
+}
+
 /** User-facing configuration passed to {@link Jishaku}. */
 export interface JishakuConfig {
   /** Command prefix. The root command is `${prefix}jsk`. Default: `.` */
@@ -58,6 +75,8 @@ export interface JishakuConfig {
   shellTimeout?: number
   /** Whether `jsk shutdown` calls `process.exit(0)` after destroying the client. Default: `false`. */
   exitOnShutdown?: boolean
+  /** Overrides which shell `jsk sh` spawns. Default: djsk's platform auto-detection. */
+  shell?: ShellOverride
 }
 
 /** Fully-resolved configuration with defaults applied. */
@@ -72,4 +91,5 @@ export interface ResolvedConfig {
   security: boolean
   secretPatterns: RegExp[]
   secretValues: string[]
+  shell: ShellOverride | null
 }

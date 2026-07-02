@@ -99,6 +99,7 @@ client.login(process.env.DISCORD_TOKEN)
 | `secretValues`   | `string[]` | `[]`       | Extra exact strings to redact in security mode.                             |
 | `shellTimeout`   | `number`   | `120000`   | Kill a `jsk sh` process after this many ms of inactivity.                   |
 | `exitOnShutdown` | `boolean`  | `false`    | Call `process.exit(0)` after `jsk shutdown` destroys the client.            |
+| `shell`          | `ShellOverride` | *(auto)* | Override which shell `jsk sh` spawns (see below).                      |
 
 ### Security mode
 
@@ -128,6 +129,21 @@ Because layer 2 patches shared prototypes, any other message the bot happens to 
 > [!Warning]
 >   
 > This is a heuristic safety net, not a guarantee. It favours over-redaction, so legitimate output may occasionally be redacted too. Treat it as defense-in-depth, not a substitute for not printing secrets in the first place.
+
+### Custom shell
+
+`jsk sh` auto-detects a shell to run — PowerShell (falling back to `cmd`) on Windows, `$SHELL` (falling back to `/bin/bash`) everywhere else — which covers Windows/macOS/Linux without any configuration. Override it via `shell` to use something else instead (PowerShell Core, a specific shell, a non-default install path, ...):
+
+```js
+new Jishaku(client, {
+  shell: {
+    command: 'pwsh',
+    args: ['-NoProfile', '-NonInteractive', '-Command'], // the code to run is appended as the final argument
+    ps1: 'PS >',       // shown before the command in the rendered output. Default: '$'
+    highlight: 'powershell', // codeblock language for syntax highlighting. Default: 'ansi'
+  },
+})
+```
 
 ## Slash commands
 
