@@ -101,6 +101,24 @@ export class Context {
   }
 
   /**
+   * Guards against sending a payload Discord rejects outright (`DiscordAPIError[50006]:
+   * Cannot send an empty message`) — a bare empty string, or an object with no content and no
+   * files/embeds/components/stickers to carry the message instead. Substitutes a zero-width
+   * space, mirroring {@link sendResult}'s existing empty-text handling.
+   */
+  private ensureNonEmpty(payload: SendPayload): SendPayload {
+    if (typeof payload === 'string') return payload.length === 0 ? '​' : payload
+    if (!payload || typeof payload !== 'object') return payload
+
+    const hasContent = typeof payload.content === 'string' && payload.content.length > 0
+    const hasOtherContent = (['files', 'embeds', 'components', 'stickers'] as const).some(
+      (key) => Array.isArray(payload[key]) && payload[key].length > 0,
+    )
+    if (hasContent || hasOtherContent) return payload
+    return { ...payload, content: '​' }
+  }
+
+  /**
    * Sends a reply through the triggering interaction, respecting its reply lifecycle
    * (`reply` once, then `editReply` if we deferred, then `followUp` for anything after).
    * Always resolves to a real message-like object (falling back to `fetchReply()`), so
@@ -125,7 +143,7 @@ export class Context {
 
   /** Sends a message to the invoking channel (or interaction reply/follow-up) and returns it. */
   async send(payload: SendPayload): Promise<AnyMessage> {
-    const scrubbed = this.scrubPayload(payload)
+    const scrubbed = this.ensureNonEmpty(this.scrubPayload(payload))
     if (this.source.kind === 'interaction') return this.interactionSend(scrubbed)
     return this.channel.send(scrubbed)
   }
@@ -136,7 +154,7 @@ export class Context {
    */
   async reply(payload: SendPayload): Promise<AnyMessage> {
     if (this.source.kind === 'interaction') return this.send(payload)
-    return (this.source.message as Loose).reply(this.scrubPayload(payload))
+    return (this.source.message as Loose).reply(this.ensureNonEmpty(this.scrubPayload(payload)))
   }
 
   /** Edits a previously sent message, applying the same redaction as {@link send}. */
