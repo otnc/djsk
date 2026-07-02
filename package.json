@@ -47,7 +47,7 @@
   ],
   "scripts": {
     "build": "tsup && pnpm build:types",
-    "build:types": "dts-bundle-generator --no-check --external-inlines discord.js-v13 discord.js-v14 -o dist/index.d.ts src/index.ts && node scripts/build.cjs",
+    "build:types": "dts-bundle-generator --no-check --external-inlines discord.js-v13 discord.js-v14 -o dist/index.d.ts src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
