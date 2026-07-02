@@ -23,7 +23,7 @@ export function buildPackageJson(answers: Answers, djskVersion: string): Record<
   }
 
   if (answers.kind === 'bot') {
-    dependencies['discord.js'] = answers.discordVersion === 'v14' ? '^14.0.0' : '^13.17.1'
+    dependencies['discord.js'] = answers.discordJsRange
   } else {
     dependencies[answers.library] = 'latest'
   }

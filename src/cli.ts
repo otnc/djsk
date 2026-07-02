@@ -1,7 +1,7 @@
 import chalk from 'chalk'
 import { Command } from 'commander'
 import { consola } from 'consola'
-import { fetchApplicationId } from './cli/discord-api'
+import { fetchApplicationId, resolveDiscordJsRange } from './cli/discord-api'
 import { detectPackageManager } from './cli/package-manager'
 import {
   promptBotOrSelfbot,
@@ -40,6 +40,7 @@ async function collectAnswers(directoryArg: string | undefined): Promise<Answers
 
   if (kind === 'bot') {
     const discordVersion = await promptDiscordVersion()
+    const discordJsRange = await resolveDiscordJsRange(discordVersion)
     const commandMode = await promptCommandMode()
     const clientId = commandMode !== 'text' && token ? await fetchApplicationId(token) : null
 
@@ -52,6 +53,7 @@ async function collectAnswers(directoryArg: string | undefined): Promise<Answers
       security,
       owners,
       discordVersion,
+      discordJsRange,
       commandMode,
       clientId,
     }
