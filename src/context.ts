@@ -228,7 +228,8 @@ export class Context {
       return
     }
 
-    const render = (page: string, index: number, total: number) => `${page}\n-- Page ${index + 1}/${total} --`
+    const render = (page: string, index: number, total: number) =>
+      `${page}\n-- Page ${index + 1}/${total} --`
     const message = await this.send({
       content: render(pages[0], 0, pages.length),
       allowedMentions: { parse: [] },
