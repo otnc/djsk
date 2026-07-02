@@ -22,6 +22,7 @@ function makeBotAnswers(overrides: Partial<BotAnswers> = {}): BotAnswers {
     security: false,
     owners: [],
     discordVersion: 'v14',
+    discordJsRange: '^14.0.0',
     commandMode: 'slash+text',
     clientId: null,
     ...overrides,
@@ -52,17 +53,20 @@ describe('entryFilePath / deployCommandsFilePath', () => {
 })
 
 describe('buildPackageJson', () => {
-  it('includes discord.js v14 and djsk for a v14 bot', () => {
-    const pkg = buildPackageJson(makeBotAnswers({ discordVersion: 'v14' }), '0.1.0')
+  it('includes djsk and the resolved discord.js range for a bot', () => {
+    const pkg = buildPackageJson(makeBotAnswers({ discordJsRange: '^14.26.4' }), '0.1.0')
     expect(pkg.name).toBe('my-bot')
     // biome-ignore lint/suspicious/noExplicitAny: test-only structural access
-    expect((pkg as any).dependencies['discord.js']).toBe('^14.0.0')
+    expect((pkg as any).dependencies['discord.js']).toBe('^14.26.4')
     // biome-ignore lint/suspicious/noExplicitAny: test-only structural access
     expect((pkg as any).dependencies.djsk).toBe('^0.1.0')
   })
 
-  it('includes discord.js v13 for a v13 bot', () => {
-    const pkg = buildPackageJson(makeBotAnswers({ discordVersion: 'v13' }), '0.1.0')
+  it('passes through whatever discord.js range was resolved (v13 bot)', () => {
+    const pkg = buildPackageJson(
+      makeBotAnswers({ discordVersion: 'v13', discordJsRange: '^13.17.1' }),
+      '0.1.0',
+    )
     // biome-ignore lint/suspicious/noExplicitAny: test-only structural access
     expect((pkg as any).dependencies['discord.js']).toBe('^13.17.1')
   })
@@ -166,7 +170,21 @@ describe('buildBotEntry', () => {
     const entry = buildBotEntry(makeBotAnswers({ commandMode: 'slash', discordVersion: 'v14' }))
     expect(entry).not.toContain('onMessageCreated')
     expect(entry).toContain('onInteractionCreate')
-    expect(entry).toContain('[GatewayIntentBits.Guilds]')
+    expect(entry).toContain('[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessageReactions]')
+  })
+
+  it('always includes GuildMessageReactions (needed for output pagination)', () => {
+    const v14Slash = buildBotEntry(makeBotAnswers({ discordVersion: 'v14', commandMode: 'slash' }))
+    expect(v14Slash).toContain('GatewayIntentBits.GuildMessageReactions')
+
+    const v14Text = buildBotEntry(makeBotAnswers({ discordVersion: 'v14', commandMode: 'text' }))
+    expect(v14Text).toContain('GatewayIntentBits.GuildMessageReactions')
+
+    const v13Slash = buildBotEntry(makeBotAnswers({ discordVersion: 'v13', commandMode: 'slash' }))
+    expect(v13Slash).toContain('Intents.FLAGS.GUILD_MESSAGE_REACTIONS')
+
+    const v13Text = buildBotEntry(makeBotAnswers({ discordVersion: 'v13', commandMode: 'text' }))
+    expect(v13Text).toContain('Intents.FLAGS.GUILD_MESSAGE_REACTIONS')
   })
 
   it('wires only messageCreate for text-only', () => {

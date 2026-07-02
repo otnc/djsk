@@ -34,6 +34,9 @@ function buildTodos(answers: Answers): string[] {
 export function printSummary(answers: Answers, writtenFiles: string[], pm: PackageManager): void {
   const todos = buildTodos(answers)
   const runner = pm === 'npm' ? 'npm run' : pm
+  // `pnpm deploy` is pnpm's own built-in command (workspace deployment), so it shadows a
+  // package.json script named "deploy" — `pnpm run deploy` is required to actually run ours.
+  const scriptRunner = pm === 'npm' ? 'npm run' : `${pm} run`
 
   const lines: string[] = [
     `Scaffolded ${writtenFiles.length} file${writtenFiles.length === 1 ? '' : 's'} in ${answers.directory}`,
@@ -43,7 +46,7 @@ export function printSummary(answers: Answers, writtenFiles: string[], pm: Packa
   ]
 
   if (answers.kind === 'bot' && answers.commandMode !== 'text') {
-    lines.push(`${runner} deploy   # registers the slash command`)
+    lines.push(`${scriptRunner} deploy   # registers the slash command`)
   }
 
   if (todos.length > 0) {

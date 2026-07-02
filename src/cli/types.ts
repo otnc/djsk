@@ -26,6 +26,8 @@ interface CommonAnswers {
 export interface BotAnswers extends CommonAnswers {
   kind: 'bot'
   discordVersion: BotDiscordVersion
+  /** The `discord.js` dependency range to write to `package.json` (the resolved latest of `discordVersion`'s major). */
+  discordJsRange: string
   commandMode: CommandMode
   /** Fetched application id, or `null` when skipped/unavailable/not applicable (text-only mode). */
   clientId: string | null

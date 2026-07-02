@@ -23,7 +23,7 @@ export function buildPackageJson(answers: Answers, djskVersion: string): Record<
   }
 
   if (answers.kind === 'bot') {
-    dependencies['discord.js'] = answers.discordVersion === 'v14' ? '^14.0.0' : '^13.17.1'
+    dependencies['discord.js'] = answers.discordJsRange
   } else {
     dependencies[answers.library] = 'latest'
   }
@@ -121,14 +121,16 @@ export function buildBotEntry(answers: Extract<Answers, { kind: 'bot' }>): strin
   const wantsText = answers.commandMode === 'text' || answers.commandMode === 'slash+text'
   const wantsSlash = answers.commandMode === 'slash' || answers.commandMode === 'slash+text'
 
+  // GuildMessageReactions is always included: long `jsk js`/`sh`/etc. output is paginated
+  // with ⬅️/➡️ reactions, which needs this intent to receive the collector's reaction events.
   const intents =
     answers.discordVersion === 'v14'
       ? wantsText
-        ? '[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]'
-        : '[GatewayIntentBits.Guilds]'
+        ? '[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageReactions]'
+        : '[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessageReactions]'
       : wantsText
-        ? '[Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.MESSAGE_CONTENT]'
-        : '[Intents.FLAGS.GUILDS]'
+        ? '[Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.MESSAGE_CONTENT, Intents.FLAGS.GUILD_MESSAGE_REACTIONS]'
+        : '[Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGE_REACTIONS]'
 
   const importLine =
     answers.discordVersion === 'v14'
