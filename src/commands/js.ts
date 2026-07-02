@@ -1,3 +1,4 @@
+import vm from 'node:vm'
 import type { Context } from '../context'
 import { installPrototypeGuards } from '../prototype-guard'
 import { guardOutbound } from '../security'
@@ -5,26 +6,35 @@ import { inspectResult } from '../util/format'
 import { loadLibraryModule } from '../util/meta'
 import type { Command } from './registry'
 
-// The AsyncFunction constructor is not exposed globally; derive it once.
-const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
-  ...args: string[]
-) => (...values: unknown[]) => Promise<unknown>
-
 const ENABLE = new Set(['on', 'true', 't', 'yes', 'y', '1', 'enable'])
 const DISABLE = new Set(['off', 'false', 'f', 'no', 'n', '0', 'disable'])
 
 /**
- * Compiles user code into an async function.
+ * Compiles user code into a `vm.Script` whose top-level statement immediately invokes an
+ * async function taking `argNames` as parameters, applied to whatever's stashed at
+ * `globalThis[argsKey]` at call time (see the handler below).
+ *
+ * Run via `runInThisContext()` — the *current* realm, not a new sandboxed one — so it behaves
+ * exactly like the plain `AsyncFunction` this replaces: full access to Node's ambient globals,
+ * and live object references (client, message, ...) passed as args work unchanged, with no
+ * serialization boundary. The difference is that `Script#runInThisContext` accepts a
+ * `timeout`, which `AsyncFunction` calls never could — see {@link EvalTimedOutError}.
  *
  * First tries to treat the whole input as a single expression (auto-returning its
  * value, e.g. `1 + 1`); if that isn't valid syntax, falls back to a statement body
  * where the user is expected to `return` explicitly.
  */
-function compile(code: string, argNames: string[]): (...values: unknown[]) => Promise<unknown> {
+function compile(code: string, argNames: string[], argsKey: string): vm.Script {
+  const params = argNames.join(', ')
+  const invocation = `.apply(null, globalThis[${JSON.stringify(argsKey)}])`
   try {
-    return new AsyncFunction(...argNames, `return (${code}\n);`)
+    return new vm.Script(`(async function (${params}) {\nreturn (${code}\n);\n})${invocation}`, {
+      filename: 'jsk js',
+    })
   } catch {
-    return new AsyncFunction(...argNames, code)
+    return new vm.Script(`(async function (${params}) {\n${code}\n})${invocation}`, {
+      filename: 'jsk js',
+    })
   }
 }
 
@@ -44,6 +54,22 @@ class EvalCancelledError extends Error {
   constructor() {
     super('Cancelled via jsk cancel.')
     this.name = 'EvalCancelledError'
+  }
+}
+
+/**
+ * Thrown when a synchronous stretch of a `jsk js` eval (e.g. a bare `while (true) {}`) ran
+ * longer than `evalTimeout` and was forcibly terminated by V8's execution watchdog.
+ *
+ * Unlike {@link EvalCancelledError}, this can't be triggered by `jsk cancel` reactively —
+ * while the eval is stuck in synchronous code, the whole bot process is blocked (nothing else
+ * runs either, including processing a cancel request), so there's no "react to the command"
+ * moment available. `evalTimeout` is a hard cap enforced up front instead.
+ */
+class EvalTimedOutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Synchronous execution exceeded ${timeoutMs}ms and was terminated.`)
+    this.name = 'EvalTimedOutError'
   }
 }
 
@@ -195,10 +221,32 @@ const jsCommand: Command = {
     }
 
     const task = jsk.submitTask('jsk js', () => controller.abort())
+    // Unique per invocation (task.index is a monotonic counter) so concurrent evals can't
+    // clobber each other's stashed arguments on the shared global object.
+    const argsKey = `__djsk_eval_args_${task.index}__`
     const capture = captureTerminalOutput()
     try {
-      const fn = compile(code, argNames)
-      const result = await raceAbort(fn(...argValues), controller.signal)
+      // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for vm.runInThisContext, deleted immediately below.
+      ;(globalThis as any)[argsKey] = argValues
+
+      let scriptResult: unknown
+      try {
+        const script = compile(code, argNames, argsKey)
+        scriptResult = script.runInThisContext({
+          timeout: jsk.config.evalTimeout,
+          filename: 'jsk js',
+        })
+      } catch (error) {
+        const errorCode = (error as NodeJS.ErrnoException)?.code
+        throw errorCode === 'ERR_SCRIPT_EXECUTION_TIMEOUT'
+          ? new EvalTimedOutError(jsk.config.evalTimeout)
+          : error
+      } finally {
+        // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for vm.runInThisContext.
+        delete (globalThis as any)[argsKey]
+      }
+
+      const result = await raceAbort(Promise.resolve(scriptResult), controller.signal)
       const terminalOutput = capture.restore()
 
       if (jsk.retain) jsk.lastResult = result
@@ -206,14 +254,27 @@ const jsCommand: Command = {
       await ctx.react('✅')
       await sendResult(ctx, result, terminalOutput)
     } catch (error) {
-      if (!(error instanceof EvalCancelledError)) throw error
-
-      // Cancelled via `jsk cancel`, which already sends its own confirmation — report only
-      // whatever terminal output the eval produced before it was stopped, if any, so this
-      // doesn't also surface as a generic error through Jishaku's catch-and-report handler.
       const terminalOutput = capture.restore()
-      await ctx.react('🛑')
-      if (terminalOutput) await sendResult(ctx, undefined, terminalOutput)
+
+      if (error instanceof EvalCancelledError) {
+        // `jsk cancel` already sends its own confirmation — report only whatever terminal
+        // output the eval produced before it was stopped, if any, rather than also surfacing
+        // this as a generic error through Jishaku's catch-and-report handler.
+        await ctx.react('🛑')
+        if (terminalOutput) await sendResult(ctx, undefined, terminalOutput)
+        return
+      }
+
+      if (error instanceof EvalTimedOutError) {
+        await ctx.react('⏱️')
+        const parts = terminalOutput
+          ? [`\`\`\`\n${terminalOutput}\n\`\`\``, error.message]
+          : [error.message]
+        await ctx.sendResult(parts.join('\n'), 'output.js')
+        return
+      }
+
+      throw error
     } finally {
       capture.restore()
       restoreGuards?.()

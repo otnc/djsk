@@ -58,6 +58,15 @@ export interface JishakuConfig {
   shellTimeout?: number
   /** Whether `jsk shutdown` calls `process.exit(0)` after destroying the client. Default: `false`. */
   exitOnShutdown?: boolean
+  /**
+   * Hard cap (ms) on any single *synchronous* stretch of a `jsk js` eval — protects against a
+   * runaway loop (`while (true) {}`) freezing the whole bot process, which `jsk cancel` can't
+   * help with since nothing (including processing that command) runs while the eval is stuck
+   * in synchronous code. Doesn't limit the eval's total time when it's `await`ing things
+   * (network calls, timers, ...) — that's unbounded, and separately stoppable via `jsk cancel`.
+   * Default: `10000`.
+   */
+  evalTimeout?: number
 }
 
 /** Fully-resolved configuration with defaults applied. */
@@ -72,4 +81,5 @@ export interface ResolvedConfig {
   security: boolean
   secretPatterns: RegExp[]
   secretValues: string[]
+  evalTimeout: number
 }

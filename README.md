@@ -99,6 +99,7 @@ client.login(process.env.DISCORD_TOKEN)
 | `secretValues`   | `string[]` | `[]`       | Extra exact strings to redact in security mode.                             |
 | `shellTimeout`   | `number`   | `120000`   | Kill a `jsk sh` process after this many ms of inactivity.                   |
 | `exitOnShutdown` | `boolean`  | `false`    | Call `process.exit(0)` after `jsk shutdown` destroys the client.            |
+| `evalTimeout`    | `number`   | `10000`    | Cap on a single *synchronous* stretch of a `jsk js` eval (see below).       |
 
 ### Security mode
 
@@ -176,7 +177,12 @@ The following variables are injected into the evaluation scope:
 
 `message`/`msg` are `null` and `interaction` is set when `js`/`sh` was invoked via slash command (through the code-input modal) instead of a text command, and vice versa.
 
-**Cancelling a running eval.** `jsk js` registers itself in `jsk tasks`, so `jsk cancel` can stop it — this reliably interrupts an eval that's stuck *awaiting* something (an infinite retry loop with an `await` in it, a Discord call that never resolves, `await new Promise(() => {})`, ...), but can't preempt a synchronous stretch of code (`while (true) {}` still blocks the event loop; nothing can interrupt that short of restarting the process). `signal` is provided so eval'd code can cooperate explicitly — pass it to anything that accepts an `AbortSignal` (`fetch(url, { signal })`) or poll `signal.aborted` inside a loop.
+**Cancelling a running eval.** `jsk js` registers itself in `jsk tasks`, and is cancellable two ways:
+
+- `jsk cancel` — stops an eval stuck *awaiting* something (an infinite retry loop with an `await` in it, a Discord call that never resolves, `await new Promise(() => {})`, ...). `signal` is provided so eval'd code can cooperate explicitly too — pass it to anything that accepts an `AbortSignal` (`fetch(url, { signal })`) or poll `signal.aborted` inside a loop.
+- `evalTimeout` — a hard cap (ms, default `10000`) on any single *synchronous* stretch of the eval, e.g. a bare `while (true) {}`. This case can't be helped by `jsk cancel`: while the eval is stuck in synchronous code, the entire bot process is blocked and can't process *any* Discord events, including a cancel request — so it's enforced automatically instead, terminating the eval once it's exceeded.
+
+Between the two, a `jsk js` eval can always be recovered from without restarting the bot.
 
 > [!Note]
 >   

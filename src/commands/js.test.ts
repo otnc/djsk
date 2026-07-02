@@ -5,11 +5,11 @@ import { jsCommands } from './js'
 
 const jsCommand = jsCommands[0]
 
-function makeJsk(security = false): Jishaku {
+function makeJsk(configOverrides: Record<string, unknown> = {}): Jishaku {
   return new Jishaku(
     // biome-ignore lint/suspicious/noExplicitAny: minimal fake client for tests.
     { token: 't0ken-fake' } as any,
-    { consoleLog: false, security },
+    { consoleLog: false, ...configOverrides },
   )
 }
 
@@ -92,7 +92,7 @@ describe('jsk js — terminal output capture', () => {
     try {
       const { ctx, send } = makeContext(
         'process.stdout.write(process.env.JS_TEST_SECRET_KEY)',
-        makeJsk(true),
+        makeJsk({ security: true }),
       )
 
       await jsCommand.handler(ctx)
@@ -110,7 +110,7 @@ describe('jsk js — terminal output capture', () => {
     try {
       const { ctx, send } = makeContext(
         'process.stdout.write(process.env.JS_TEST_SECRET_KEY_2)',
-        makeJsk(false),
+        makeJsk({ security: false }),
       )
 
       await jsCommand.handler(ctx)
@@ -180,4 +180,66 @@ describe('jsk js — cancellation', () => {
 
     expect(react).not.toHaveBeenCalledWith('🛑')
   })
+})
+
+describe('jsk js — synchronous runaway (evalTimeout)', () => {
+  it('terminates a bare while(true) loop instead of hanging the process forever', async () => {
+    const jsk = makeJsk({ evalTimeout: 100 })
+    const { ctx, react, send } = makeContext('while (true) {}', jsk)
+
+    await jsCommand.handler(ctx)
+
+    expect(react).toHaveBeenCalledWith('⏱️')
+    expect(react).not.toHaveBeenCalledWith('✅')
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toContain('Synchronous execution exceeded')
+    expect(payload.content).toContain('100ms')
+  }, 10_000)
+
+  it('recovers cleanly afterwards — a later eval still runs fine', async () => {
+    const jsk = makeJsk({ evalTimeout: 100 })
+    const timedOut = makeContext('while (true) {}', jsk)
+    await jsCommand.handler(timedOut.ctx)
+
+    const following = makeContext('return 1 + 1', jsk)
+    await jsCommand.handler(following.ctx)
+
+    const [payload] = following.send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('2')
+  }, 10_000)
+
+  it('includes terminal output written before the loop started', async () => {
+    const jsk = makeJsk({ evalTimeout: 100 })
+    const { ctx, send } = makeContext(
+      'process.stdout.write("before the loop\\n"); while (true) {}',
+      jsk,
+    )
+
+    await jsCommand.handler(ctx)
+
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toContain('before the loop')
+  }, 10_000)
+
+  it('removes the task after timing out, so it no longer shows up in jsk tasks', async () => {
+    const jsk = makeJsk({ evalTimeout: 100 })
+    const { ctx } = makeContext('while (true) {}', jsk)
+
+    await jsCommand.handler(ctx)
+
+    expect(jsk.tasks).toHaveLength(0)
+  }, 10_000)
+
+  it('does not time out an eval that only awaits (no sync runaway)', async () => {
+    const jsk = makeJsk({ evalTimeout: 100 })
+    const { ctx, send } = makeContext(
+      'await new Promise((r) => setTimeout(r, 300)); return "done"',
+      jsk,
+    )
+
+    await jsCommand.handler(ctx)
+
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('done')
+  }, 10_000)
 })

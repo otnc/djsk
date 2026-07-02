@@ -60,6 +60,7 @@ function resolveConfig(config: JishakuConfig): ResolvedConfig {
     security: config.security ?? false,
     secretPatterns: config.secretPatterns ?? [],
     secretValues: config.secretValues ?? [],
+    evalTimeout: config.evalTimeout ?? 10_000,
   }
 }
 
