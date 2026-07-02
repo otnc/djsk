@@ -21,6 +21,7 @@ function makeBotAnswers(overrides: Partial<BotAnswers> = {}): BotAnswers {
     token: null,
     security: false,
     owners: [],
+    prefix: '.',
     discordVersion: 'v14',
     discordJsRange: '^14.0.0',
     commandMode: 'slash+text',
@@ -38,6 +39,7 @@ function makeSelfbotAnswers(overrides: Partial<SelfbotAnswers> = {}): SelfbotAns
     token: null,
     security: false,
     owners: [],
+    prefix: '.',
     library: 'discord.js-selfbot-v13',
     ...overrides,
   }
@@ -214,6 +216,14 @@ describe('buildBotEntry', () => {
     expect(buildBotEntry(makeBotAnswers({ security: true }))).toContain('security: true,')
     expect(buildBotEntry(makeBotAnswers({ security: false }))).not.toContain('security: true,')
   })
+
+  it('includes a custom prefix only when it differs from the default', () => {
+    const custom = buildBotEntry(makeBotAnswers({ prefix: '!' }))
+    expect(custom).toContain("prefix: '!',")
+
+    const defaultPrefix = buildBotEntry(makeBotAnswers({ prefix: '.' }))
+    expect(defaultPrefix).not.toMatch(/^\s*prefix:/m)
+  })
 })
 
 describe('buildSelfbotEntry', () => {
@@ -224,6 +234,14 @@ describe('buildSelfbotEntry', () => {
     expect(entry).toContain("from 'discord.js-selfbot-youtsuho-v13'")
     expect(entry).toContain('process.env.SELFBOT_TOKEN')
     expect(entry).toContain('onMessageCreated')
+  })
+
+  it('includes a custom prefix only when it differs from the default', () => {
+    const custom = buildSelfbotEntry(makeSelfbotAnswers({ prefix: '!' }))
+    expect(custom).toContain("prefix: '!',")
+
+    const defaultPrefix = buildSelfbotEntry(makeSelfbotAnswers({ prefix: '.' }))
+    expect(defaultPrefix).not.toMatch(/^\s*prefix:/m)
   })
 })
 

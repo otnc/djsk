@@ -64,6 +64,20 @@ export async function promptSecurity(): Promise<boolean> {
   })
 }
 
+/** Returns `.` (djsk's default) if the prefix prompt is submitted empty. */
+export async function promptPrefix(): Promise<string> {
+  const raw = await consola.prompt(
+    'Command prefix for text commands (the root command is `<prefix>jsk`):',
+    {
+      type: 'text',
+      default: '.',
+      placeholder: '.',
+      cancel: 'reject',
+    },
+  )
+  return raw.trim().length > 0 ? raw.trim() : '.'
+}
+
 /** Returns an empty array if the owner id prompt is submitted empty (skipped). */
 export async function promptOwners(): Promise<string[]> {
   const raw = await consola.prompt('Owner user ID(s), space-separated (leave empty to skip):', {

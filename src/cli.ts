@@ -11,6 +11,7 @@ import {
   promptFileFormat,
   promptOverwriteConfirm,
   promptOwners,
+  promptPrefix,
   promptSecurity,
   promptSelfbotLibrary,
   promptToken,
@@ -36,6 +37,7 @@ async function collectAnswers(directoryArg: string | undefined): Promise<Answers
   const token = await promptToken(kind)
   const security = await promptSecurity()
   const owners = await promptOwners()
+  const prefix = await promptPrefix()
   const projectName = derivePackageName(directory)
 
   if (kind === 'bot') {
@@ -52,6 +54,7 @@ async function collectAnswers(directoryArg: string | undefined): Promise<Answers
       token,
       security,
       owners,
+      prefix,
       discordVersion,
       discordJsRange,
       commandMode,
@@ -69,6 +72,7 @@ async function collectAnswers(directoryArg: string | undefined): Promise<Answers
     token,
     security,
     owners,
+    prefix,
     library,
   }
 }
