@@ -15,11 +15,12 @@ function makeJsk(security = false): Jishaku {
 
 function makeContext(code: string, jsk: Jishaku = makeJsk()) {
   const send = vi.fn(async (payload: unknown) => ({ payload }))
+  const react = vi.fn(async () => {})
   // biome-ignore lint/suspicious/noExplicitAny: minimal fake message for tests.
-  const message = { channel: { send }, react: vi.fn(async () => {}), author: {} } as any
+  const message = { channel: { send }, react, author: {} } as any
   const source = { kind: 'message' as const, message }
   const ctx = new Context(jsk, source, 'js', code)
-  return { ctx, send }
+  return { ctx, send, react }
 }
 
 // vitest patches the global `console` for its own per-test reporting, so `console.log` inside
@@ -119,5 +120,64 @@ describe('jsk js — terminal output capture', () => {
     } finally {
       delete process.env.JS_TEST_SECRET_KEY_2
     }
+  })
+})
+
+describe('jsk js — cancellation', () => {
+  it('registers a cancellable task while the eval is running', async () => {
+    const { ctx } = makeContext('await new Promise(() => {})')
+    const handlerPromise = jsCommand.handler(ctx)
+
+    expect(ctx.jsk.tasks).toHaveLength(1)
+    expect(ctx.jsk.tasks[0].command).toBe('jsk js')
+    expect(ctx.jsk.tasks[0].cancel).toBeTypeOf('function')
+
+    ctx.jsk.tasks[0].cancel?.()
+    await handlerPromise
+  })
+
+  it('reports a clean cancellation instead of hanging when jsk cancel aborts it', async () => {
+    const { ctx, react, send } = makeContext('await new Promise(() => {})')
+    const handlerPromise = jsCommand.handler(ctx)
+
+    ctx.jsk.tasks[0].cancel?.()
+    await expect(handlerPromise).resolves.toBeUndefined()
+
+    expect(react).toHaveBeenCalledWith('🛑')
+    expect(react).not.toHaveBeenCalledWith('✅')
+    expect(ctx.jsk.tasks).toHaveLength(0)
+    // No terminal output was produced before cancelling, so there's nothing to send.
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('still reports terminal output produced before the cancellation', async () => {
+    const { ctx, send } = makeContext(
+      'process.stdout.write("partial\\n"); await new Promise(() => {})',
+    )
+    const handlerPromise = jsCommand.handler(ctx)
+
+    ctx.jsk.tasks[0].cancel?.()
+    await handlerPromise
+
+    expect(send).toHaveBeenCalledTimes(1)
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toContain('partial')
+  })
+
+  it('exposes an AbortSignal in the eval scope for cooperative cancellation', async () => {
+    const { ctx, send } = makeContext('return signal instanceof AbortSignal')
+
+    await jsCommand.handler(ctx)
+
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('true')
+  })
+
+  it('leaves other errors (not a cancellation) to propagate normally', async () => {
+    const { ctx, react } = makeContext('throw new Error("boom")')
+
+    await expect(jsCommand.handler(ctx)).rejects.toThrow('boom')
+
+    expect(react).not.toHaveBeenCalledWith('🛑')
   })
 })

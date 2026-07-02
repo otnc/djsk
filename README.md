@@ -172,9 +172,11 @@ All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js 1 + 1`) or `/js
 
 The following variables are injected into the evaluation scope:
 
-`client` / `bot`, `ctx`, `message` / `msg`, `interaction`, `author`, `channel`, `guild`, `me`, `_` (last result), and `vars` (a persistent object when retention is on).
+`client` / `bot`, `ctx`, `message` / `msg`, `interaction`, `author`, `channel`, `guild`, `me`, `_` (last result), `vars` (a persistent object when retention is on), and `signal` (an `AbortSignal`, see below).
 
 `message`/`msg` are `null` and `interaction` is set when `js`/`sh` was invoked via slash command (through the code-input modal) instead of a text command, and vice versa.
+
+**Cancelling a running eval.** `jsk js` registers itself in `jsk tasks`, so `jsk cancel` can stop it — this reliably interrupts an eval that's stuck *awaiting* something (an infinite retry loop with an `await` in it, a Discord call that never resolves, `await new Promise(() => {})`, ...), but can't preempt a synchronous stretch of code (`while (true) {}` still blocks the event loop; nothing can interrupt that short of restarting the process). `signal` is provided so eval'd code can cooperate explicitly — pass it to anything that accepts an `AbortSignal` (`fetch(url, { signal })`) or poll `signal.aborted` inside a loop.
 
 > [!Note]
 >   

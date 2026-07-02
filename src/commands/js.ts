@@ -39,6 +39,44 @@ function isMessage(value: any): boolean {
   )
 }
 
+/** Thrown to unwind a `jsk js` eval that was stopped via `jsk cancel`. */
+class EvalCancelledError extends Error {
+  constructor() {
+    super('Cancelled via jsk cancel.')
+    this.name = 'EvalCancelledError'
+  }
+}
+
+/**
+ * Resolves/rejects with `promise`, but rejects with {@link EvalCancelledError} as soon as
+ * `signal` aborts — whichever comes first.
+ *
+ * This only wins the race at an `await` point in the running eval (or in a Promise chain it
+ * started, e.g. a pending `fetch`): JS can't preempt a synchronous stretch of code (an
+ * unconditional `while (true) {}` blocks the event loop entirely, so nothing — this included —
+ * runs until it returns control). It does, however, cover the far more common "hang" shape:
+ * an eval stuck awaiting something that never resolves (an infinite retry loop with an
+ * `await` in it, a Discord call that never comes back, `await new Promise(() => {})`, ...).
+ */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new EvalCancelledError())
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new EvalCancelledError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
 type WriteFn = typeof process.stdout.write
 
 /**
@@ -125,6 +163,8 @@ const jsCommand: Command = {
         ? guardOutbound(value, (text) => jsk.scrub(text))
         : value
 
+    const controller = new AbortController()
+
     const scope: Record<string, unknown> = {
       client: ctx.client,
       bot: ctx.client,
@@ -139,6 +179,9 @@ const jsCommand: Command = {
       me: guard((ctx.client as any).user),
       _: jsk.lastResult,
       vars: jsk.replVars,
+      // Exposed so cooperative user code can pass it along (e.g. `fetch(url, { signal })`) or
+      // poll `signal.aborted` in a loop, for cleaner cancellation than raceAbort alone gives.
+      signal: controller.signal,
     }
     const argNames = Object.keys(scope)
     const argValues = Object.values(scope)
@@ -151,17 +194,26 @@ const jsCommand: Command = {
       if (module) restoreGuards = installPrototypeGuards(module, (text) => jsk.scrub(text))
     }
 
-    const task = jsk.submitTask('jsk js')
+    const task = jsk.submitTask('jsk js', () => controller.abort())
     const capture = captureTerminalOutput()
     try {
       const fn = compile(code, argNames)
-      const result = await fn(...argValues)
+      const result = await raceAbort(fn(...argValues), controller.signal)
       const terminalOutput = capture.restore()
 
       if (jsk.retain) jsk.lastResult = result
 
       await ctx.react('✅')
       await sendResult(ctx, result, terminalOutput)
+    } catch (error) {
+      if (!(error instanceof EvalCancelledError)) throw error
+
+      // Cancelled via `jsk cancel`, which already sends its own confirmation — report only
+      // whatever terminal output the eval produced before it was stopped, if any, so this
+      // doesn't also surface as a generic error through Jishaku's catch-and-report handler.
+      const terminalOutput = capture.restore()
+      await ctx.react('🛑')
+      if (terminalOutput) await sendResult(ctx, undefined, terminalOutput)
     } finally {
       capture.restore()
       restoreGuards?.()
