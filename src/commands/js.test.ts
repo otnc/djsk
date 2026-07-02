@@ -195,6 +195,84 @@ describe('jsk js — dynamicImport', () => {
   })
 })
 
+describe('jsk js — blocking child_process calls', () => {
+  it('kills an execSync call with no explicit timeout after evalTimeout', async () => {
+    const jsk = makeJsk({ evalTimeout: 300 })
+    const { ctx, react, send } = makeContext(
+      `const cp = await dynamicImport("node:child_process")
+       try {
+         cp.execSync(${JSON.stringify(process.execPath)} + ' -e "setTimeout(()=>{}, 3000)"')
+         return 'ran to completion'
+       } catch (e) {
+         return e.code
+       }`,
+      jsk,
+    )
+
+    const start = Date.now()
+    await jsCommand.handler(ctx)
+    const elapsed = Date.now() - start
+
+    // Killed by the injected default timeout (~300ms), not left to run the full 3s.
+    expect(elapsed).toBeLessThan(2000)
+    expect(react).toHaveBeenCalledWith('✅')
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('ETIMEDOUT')
+  }, 10_000)
+
+  it('does not override a timeout the eval code set explicitly', async () => {
+    const jsk = makeJsk({ evalTimeout: 5000 })
+    const { ctx, react, send } = makeContext(
+      `const cp = await dynamicImport("node:child_process")
+       try {
+         cp.execSync(${JSON.stringify(process.execPath)} + ' -e "setTimeout(()=>{}, 3000)"', { timeout: 200 })
+         return 'ran to completion'
+       } catch (e) {
+         return e.code
+       }`,
+      jsk,
+    )
+
+    const start = Date.now()
+    await jsCommand.handler(ctx)
+    const elapsed = Date.now() - start
+
+    // Killed at ~200ms (the eval's own explicit timeout), well under the 5000ms evalTimeout —
+    // proves the default injection didn't clobber the caller's own value.
+    expect(elapsed).toBeLessThan(2000)
+    expect(react).toHaveBeenCalledWith('✅')
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('ETIMEDOUT')
+  }, 10_000)
+
+  it('does not mutate the real child_process module (only the dynamicImport result is wrapped)', async () => {
+    const childProcess = await import('node:child_process')
+    const originalExecSync = childProcess.execSync
+    const jsk = makeJsk({ evalTimeout: 5000 })
+    const { ctx } = makeContext(
+      'const cp = await dynamicImport("node:child_process"); return typeof cp.execSync',
+      jsk,
+    )
+
+    await jsCommand.handler(ctx)
+
+    expect(childProcess.execSync).toBe(originalExecSync)
+  })
+
+  it('leaves unguarded child_process exports (e.g. exec) passing through unwrapped', async () => {
+    const jsk = makeJsk({ evalTimeout: 5000 })
+    const { ctx, send } = makeContext(
+      'const cp = await dynamicImport("node:child_process"); return typeof cp.exec',
+      jsk,
+    )
+
+    await jsCommand.handler(ctx)
+
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('function')
+  })
+})
+
 describe('jsk js — synchronous runaway (evalTimeout)', () => {
   it('terminates a bare while(true) loop instead of hanging the process forever', async () => {
     const jsk = makeJsk({ evalTimeout: 100 })

@@ -9,6 +9,37 @@ import type { Command } from './registry'
 const ENABLE = new Set(['on', 'true', 't', 'yes', 'y', '1', 'enable'])
 const DISABLE = new Set(['off', 'false', 'f', 'no', 'n', '0', 'disable'])
 
+const GUARDED_CHILD_PROCESS_METHODS = new Set(['execSync', 'execFileSync', 'spawnSync'])
+
+/**
+ * Wraps `fn` (one of `child_process`'s `execSync`/`execFileSync`/`spawnSync`) so a call that
+ * doesn't specify its own `timeout` gets `timeoutMs` as a default, without overriding a value
+ * the eval's own code explicitly passed.
+ *
+ * These three are the common way eval'd code blocks on a *native* call rather than JS
+ * execution — and unlike a synchronous JS loop, {@link EvalTimedOutError}'s `vm.Script` timeout
+ * can't preempt them (V8's execution watchdog only checks in during actual bytecode execution,
+ * not while parked waiting on a native/libuv call to return; confirmed experimentally). They
+ * do, however, each already support their own native `timeout` option (which kills the child
+ * and unblocks the parent) — this just makes sure one is always set.
+ *
+ * Doesn't help with other blocking natives with no such option (`fs.readFileSync` hung on a
+ * slow pipe, a bare `Atomics.wait()`, ...) — those remain a real, if rarer, gap.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: forwarding execSync/execFileSync/spawnSync's overloaded signatures verbatim.
+function withDefaultTimeout(fn: (...args: any[]) => any, timeoutMs: number) {
+  // biome-ignore lint/suspicious/noExplicitAny: see above.
+  return (...args: any[]) => {
+    const last = args[args.length - 1]
+    if (last !== null && typeof last === 'object' && !Array.isArray(last)) {
+      if (last.timeout === undefined) args[args.length - 1] = { ...last, timeout: timeoutMs }
+    } else {
+      args.push({ timeout: timeoutMs })
+    }
+    return fn(...args)
+  }
+}
+
 /**
  * Compiles user code into a `vm.Script` whose top-level statement immediately invokes an
  * async function taking `argNames` as parameters, applied to whatever's stashed at
@@ -226,7 +257,27 @@ const jsCommand: Command = {
       // every djsk consumer's process can be expected to run with. This closure lives outside
       // the vm-executed code (in this file's normal module scope), so it can freely `import()`
       // without that restriction; eval'd code gets the same capability via `dynamicImport(...)`.
-      dynamicImport: (specifier: string) => import(specifier),
+      //
+      // `node:child_process` specifically comes back Proxy-wrapped so execSync/execFileSync/
+      // spawnSync default to `evalTimeout` (see withDefaultTimeout) — this is the actual
+      // interception point, not a global monkeypatch of the module: mutating the module object
+      // reached via a default import (`import cp from 'node:child_process'`) does NOT affect
+      // what a *named*/namespace import (what `dynamicImport` returns) sees, confirmed
+      // experimentally — Node's synthetic ESM bindings for built-ins aren't reliably live
+      // across that boundary, so patching has to happen right here instead.
+      dynamicImport: async (specifier: string) => {
+        const imported = await import(specifier)
+        if (specifier !== 'node:child_process' && specifier !== 'child_process') return imported
+
+        return new Proxy(imported, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver)
+            return typeof prop === 'string' && GUARDED_CHILD_PROCESS_METHODS.has(prop)
+              ? withDefaultTimeout(value, jsk.config.evalTimeout)
+              : value
+          },
+        })
+      },
     }
     const argNames = Object.keys(scope)
     const argValues = Object.values(scope)
