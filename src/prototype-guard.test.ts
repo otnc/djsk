@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { installPrototypeGuards } from './prototype-guard'
+import { installPrototypeGuards, installRestGuard } from './prototype-guard'
 
 const scrub = (text: string) => text.replaceAll('SECRET', '[redacted]')
 
@@ -79,5 +79,81 @@ describe('installPrototypeGuards', () => {
     expect(channel.calls).toEqual(['a [redacted]'])
 
     restore()
+  })
+})
+
+describe('installRestGuard', () => {
+  it("scrubs body.content on a REST class's request() and restores it afterwards", async () => {
+    class REST {
+      calls: unknown[] = []
+      async request(options: unknown) {
+        this.calls.push(options)
+        return options
+      }
+    }
+    const originalRequest = REST.prototype.request
+
+    const restore = installRestGuard({ REST }, scrub)
+    expect(restore).not.toBeNull()
+
+    const rest = new REST()
+    await rest.request({
+      method: 'POST',
+      fullRoute: '/channels/1/messages',
+      body: { content: 'a SECRET value' },
+    })
+    expect(rest.calls).toEqual([
+      {
+        method: 'POST',
+        fullRoute: '/channels/1/messages',
+        body: { content: 'a [redacted] value' },
+      },
+    ])
+
+    restore?.()
+    expect(REST.prototype.request).toBe(originalRequest)
+  })
+
+  it('leaves requests with no body (e.g. GET) untouched', async () => {
+    class REST {
+      calls: unknown[] = []
+      async request(options: unknown) {
+        this.calls.push(options)
+        return options
+      }
+    }
+
+    const restore = installRestGuard({ REST }, scrub)
+    const rest = new REST()
+    await rest.request({ method: 'GET', fullRoute: '/users/@me' })
+    expect(rest.calls).toEqual([{ method: 'GET', fullRoute: '/users/@me' }])
+
+    restore?.()
+  })
+
+  it('returns null when the module has no REST export (v13 and the selfbot forks)', () => {
+    class TextChannel {}
+    expect(installRestGuard({ TextChannel }, scrub)).toBeNull()
+  })
+
+  it('does not double-guard when called twice for the same class (nested/concurrent evals)', async () => {
+    class REST {
+      calls: unknown[] = []
+      async request(options: unknown) {
+        this.calls.push(options)
+        return options
+      }
+    }
+
+    const restoreOuter = installRestGuard({ REST }, scrub)
+    const restoreInner = installRestGuard({ REST }, scrub)
+    expect(restoreInner).toBeNull()
+
+    const rest = new REST()
+    await rest.request({ body: { content: 'a SECRET' } })
+    // Scrubbed exactly once, not twice (which would be harmless here but signals double-wrapping).
+    expect(rest.calls).toEqual([{ body: { content: 'a [redacted]' } }])
+
+    restoreOuter?.()
   })
 })

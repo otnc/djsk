@@ -104,3 +104,64 @@ export function installPrototypeGuards(
     }
   }
 }
+
+/** `body` fields on a raw REST request that may carry user-visible text needing redaction. */
+const REST_BODY_TEXT_FIELDS = ['content']
+
+/**
+ * Patches the library's `REST` class (discord.js v14+ only — v13 and the v13-based selfbot
+ * forks route requests through an older `client.api` chainable builder with no equivalent
+ * single choke point, so this is a no-op there) so a request's `body.content` is scrubbed
+ * before being sent, for the duration of a single eval.
+ *
+ * `.get`/`.post`/`.put`/`.patch`/`.delete` all funnel through `REST.prototype.request`
+ * internally (confirmed by inspecting discord.js v14's implementation), so patching just that
+ * one method covers all of them. This narrows, but doesn't close, the gap `installPrototypeGuards`
+ * already documents: a hand-built `fetch()` call using the raw token never touches this class
+ * (or the library) at all, so it still isn't — and can't be — covered.
+ *
+ * Returns `null` (nothing to restore) if the library has no `REST` export, matching
+ * {@link installPrototypeGuards}'s "best-effort" contract.
+ */
+export function installRestGuard(
+  module: Record<string, unknown>,
+  scrub: (text: string) => string,
+): (() => void) | null {
+  const RestClass = (module.REST ?? (module as Any).default?.REST) as Any
+  if (typeof RestClass !== 'function' || !RestClass.prototype) return null
+
+  const proto = RestClass.prototype
+  const original = proto.request
+  if (typeof original !== 'function' || original[GUARD_TAG]) return null
+
+  const wrapper = function (this: unknown, options: Any, ...rest: Any[]) {
+    if (
+      options &&
+      typeof options === 'object' &&
+      options.body &&
+      typeof options.body === 'object'
+    ) {
+      const body = { ...options.body }
+      for (const field of REST_BODY_TEXT_FIELDS) {
+        if (typeof body[field] === 'string') body[field] = scrub(body[field])
+      }
+      options = { ...options, body }
+    }
+    return original.call(this, options, ...rest)
+  }
+  wrapper[GUARD_TAG] = true
+
+  try {
+    proto.request = wrapper
+  } catch {
+    return null // non-writable in this runtime
+  }
+
+  return () => {
+    try {
+      proto.request = original
+    } catch {
+      // ignore
+    }
+  }
+}
