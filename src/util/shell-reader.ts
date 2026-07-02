@@ -18,6 +18,26 @@ function toDecoderLabel(encoding: Encoding): string {
   return 'utf-8'
 }
 
+/**
+ * PowerShell writes its own console output (including localized error records) using
+ * `[Console]::OutputEncoding`, which defaults to the system's legacy OEM/ANSI codepage —
+ * not UTF-8 — on non-English Windows. Left alone, that mismatches the `TextDecoder(label)`
+ * used to read the piped output back in Node, producing mojibake. Prepending this forces
+ * PowerShell's output encoding to match whatever `label` we're about to decode with.
+ */
+function powershellEncodingPrelude(label: string): string {
+  const encodingExpr =
+    label === 'shift-jis'
+      ? '[System.Text.Encoding]::GetEncoding(932)'
+      : '[System.Text.Encoding]::UTF8'
+  return `[Console]::OutputEncoding = ${encodingExpr}; `
+}
+
+/** The `chcp` codepage matching `label`, for the `cmd.exe` fallback shell. */
+function cmdCodepage(label: string): number {
+  return label === 'shift-jis' ? 932 : 65001
+}
+
 function cleanLine(line: string): string {
   return line.replace(ANSI_ESCAPE, '').replace('\r', '').replaceAll('```', `\`\`${ZWSP}\``)
 }
@@ -53,15 +73,22 @@ export class ShellReader {
     let command: string
     let args: string[]
 
+    const label = toDecoderLabel(options.encoding)
+
     if (WINDOWS) {
       if (existsSync(POWERSHELL)) {
         command = 'powershell'
-        args = ['-NoProfile', '-NonInteractive', '-Command', code]
+        args = [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          powershellEncodingPrelude(label) + code,
+        ]
         this.ps1 = 'PS >'
         this.highlight = 'powershell'
       } else {
         command = 'cmd'
-        args = ['/c', code]
+        args = ['/c', `chcp ${cmdCodepage(label)} >nul && ${code}`]
         this.ps1 = 'cmd >'
         this.highlight = 'cmd'
       }
@@ -74,7 +101,6 @@ export class ShellReader {
 
     this.process = spawn(command, args, { windowsHide: true })
 
-    const label = toDecoderLabel(options.encoding)
     this.attachStream(this.process.stdout, label, options, '')
     this.attachStream(this.process.stderr, label, options, '[stderr] ')
 
