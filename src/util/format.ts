@@ -3,6 +3,13 @@ import { inspect } from 'node:util'
 /** Discord's hard limit for a single message's content. */
 export const MESSAGE_LIMIT = 2000
 
+/**
+ * Above this many pages, output is sent as a file attachment instead of a reaction-paginated
+ * message — keeps pagination usable (and the arrow reactions meaningful) instead of turning
+ * into a many-dozens-of-pages click-through for genuinely huge output.
+ */
+export const MAX_PAGINATED_PAGES = 10
+
 /** Zero-width space used to defuse backtick sequences inside codeblocks. */
 const ZWSP = '​'
 
@@ -64,7 +71,10 @@ export function wrapPages(text: string, options: WrapOptions = {}): string[] {
   const prefix = options.prefix ?? ''
   const suffix = options.suffix ?? ''
   const maxSize = options.maxSize ?? 1980
-  const budget = maxSize - prefix.length - suffix.length - 2 // 2 newlines around content
+  // Clamped to at least 1: a prefix/suffix that (nearly) fills maxSize on its own would
+  // otherwise drive this to zero or negative, and the hard-split loop below never
+  // terminates without positive forward progress.
+  const budget = Math.max(1, maxSize - prefix.length - suffix.length - 2) // 2 newlines around content
 
   const chunks: string[] = []
   for (const rawLine of text.split('\n')) {

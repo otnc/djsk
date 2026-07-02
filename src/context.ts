@@ -2,7 +2,8 @@ import { type Codeblock, parseCodeblock } from './codeblock'
 import type { Jishaku } from './jishaku'
 import { type MessagePayload, scrubMessagePayload } from './security'
 import type { AnyClient, AnyInteraction, AnyMessage } from './types'
-import { MESSAGE_LIMIT, toFile, wrapPages } from './util/format'
+import { MAX_PAGINATED_PAGES, MESSAGE_LIMIT, toFile, wrapPages } from './util/format'
+import { paginate } from './util/paginate'
 
 // djsk is duck-typed at runtime: the concrete shapes differ across discord.js
 // v13/v14 and the selfbot forks, so a single loose alias documents that intent
@@ -181,31 +182,57 @@ export class Context {
   }
 
   /**
-   * Sends a plain-text result, redacting the token. Falls back to a file attachment
-   * when the content exceeds Discord's message limit. Mirrors jishaku's `jsk py` handling.
+   * Sends a plain-text result, redacting the token. Content that exceeds Discord's message
+   * limit is sent as a single message with ⬅️/➡️ reaction pagination (see {@link paginate})
+   * instead, falling back to a file attachment only when it's too long even for that.
+   * Mirrors jishaku's `jsk py` handling.
    */
   async sendResult(text: string, filename = 'output.txt'): Promise<AnyMessage> {
     const content = this.jsk.scrub(text.length === 0 ? '​' : text)
     if (content.length <= MESSAGE_LIMIT) {
       return this.send({ content, allowedMentions: { parse: [] } })
     }
-    return this.send({ files: [toFile(filename, content)] })
+
+    const pages = wrapPages(content, { maxSize: MESSAGE_LIMIT - 40 })
+    if (pages.length > MAX_PAGINATED_PAGES) {
+      return this.send({ files: [toFile(filename, content)] })
+    }
+
+    const render = (page: string, index: number, total: number) =>
+      `${page}\n\n-- Page ${index + 1}/${total} --`
+
+    const message = await this.send({
+      content: render(pages[0], 0, pages.length),
+      allowedMentions: { parse: [] },
+    })
+    await paginate(this, message, pages, render, this.author.id)
+    return message
   }
 
   /**
-   * Sends `text` wrapped in a codeblock. Splits across multiple messages when it is
-   * too long, and falls back to a file attachment when it would need many pages.
+   * Sends `text` wrapped in a codeblock. Content that needs more than one page is sent as a
+   * single ⬅️/➡️ reaction-paginated message (see {@link paginate}) rather than one message per
+   * page, and falls back to a file attachment when it would need too many pages even for that.
    */
   async sendCodeblock(text: string, language = '', filename = 'output.txt'): Promise<void> {
     const content = this.jsk.scrub(text)
-    const pages = wrapPages(content, { prefix: `\`\`\`${language}`, suffix: '```', maxSize: 1980 })
+    const pages = wrapPages(content, { prefix: `\`\`\`${language}`, suffix: '```', maxSize: 1940 })
 
-    if (pages.length > 4) {
+    if (pages.length > MAX_PAGINATED_PAGES) {
       await this.send({ files: [toFile(filename, content)] })
       return
     }
-    for (const page of pages) {
-      await this.send({ content: page, allowedMentions: { parse: [] } })
+
+    if (pages.length === 1) {
+      await this.send({ content: pages[0], allowedMentions: { parse: [] } })
+      return
     }
+
+    const render = (page: string, index: number, total: number) => `${page}\n-- Page ${index + 1}/${total} --`
+    const message = await this.send({
+      content: render(pages[0], 0, pages.length),
+      allowedMentions: { parse: [] },
+    })
+    await paginate(this, message, pages, render, this.author.id)
   }
 }

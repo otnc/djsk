@@ -1,9 +1,14 @@
 import type { AnyMessage } from '../types'
+import { MAX_PAGINATED_PAGES, toFile, wrapPages } from '../util/format'
+import { paginate } from '../util/paginate'
 import { ShellReader } from '../util/shell-reader'
 import type { Command } from './registry'
 
 const EDIT_INTERVAL = 1500
 const TAIL_LIMIT = 1900
+// Cap on the command text echoed in the paginated view's header, so a pathologically long
+// one-liner can't shrink wrapPages' per-page budget to (near-)nothing.
+const MAX_HEADER_CODE_LENGTH = 200
 
 const shellCommand: Command = {
   name: 'sh',
@@ -29,7 +34,7 @@ const shellCommand: Command = {
       },
     })
 
-    const render = (): string => {
+    const renderTail = (): string => {
       const tail = output.length > TAIL_LIMIT ? output.slice(output.length - TAIL_LIMIT) : output
       return `\`\`\`${reader.highlight}\n${reader.ps1} ${code}\n\n${tail}\`\`\``
     }
@@ -37,7 +42,7 @@ const shellCommand: Command = {
     const flush = async (): Promise<void> => {
       if (!dirty) return
       dirty = false
-      const content = render()
+      const content = renderTail()
       try {
         if (message) {
           await ctx.edit(message, content)
@@ -62,7 +67,38 @@ const shellCommand: Command = {
       ctx.jsk.removeTask(task)
     }
 
-    await flush()
+    // Final render: like `jsk js`, output that doesn't fit in one message gets ⬅️/➡️
+    // pagination over the FULL output (not just the live tail) instead of staying
+    // tail-truncated, falling back to a file attachment (alongside the tail) only when it's
+    // too long even for that.
+    const headerCode =
+      code.length > MAX_HEADER_CODE_LENGTH ? `${code.slice(0, MAX_HEADER_CODE_LENGTH)}…` : code
+    const prefix = `\`\`\`${reader.highlight}\n${reader.ps1} ${headerCode}\n\n`
+    const pages = wrapPages(output, { prefix, suffix: '```', maxSize: 1940 })
+
+    if (pages.length <= 1) {
+      await flush()
+      return
+    }
+
+    if (pages.length > MAX_PAGINATED_PAGES) {
+      await flush()
+      await ctx.send({ files: [toFile('output.txt', output)] })
+      return
+    }
+
+    const render = (page: string, index: number, total: number) =>
+      `${page}\n-- Page ${index + 1}/${total} --`
+    const lastIndex = pages.length - 1
+    const finalContent = render(pages[lastIndex], lastIndex, pages.length)
+
+    try {
+      message = message ? await ctx.edit(message, finalContent) : await ctx.send(finalContent)
+    } catch {
+      return
+    }
+
+    await paginate(ctx, message, pages, render, ctx.author.id, lastIndex)
   },
 }
 

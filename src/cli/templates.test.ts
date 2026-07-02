@@ -170,7 +170,21 @@ describe('buildBotEntry', () => {
     const entry = buildBotEntry(makeBotAnswers({ commandMode: 'slash', discordVersion: 'v14' }))
     expect(entry).not.toContain('onMessageCreated')
     expect(entry).toContain('onInteractionCreate')
-    expect(entry).toContain('[GatewayIntentBits.Guilds]')
+    expect(entry).toContain('[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessageReactions]')
+  })
+
+  it('always includes GuildMessageReactions (needed for output pagination)', () => {
+    const v14Slash = buildBotEntry(makeBotAnswers({ discordVersion: 'v14', commandMode: 'slash' }))
+    expect(v14Slash).toContain('GatewayIntentBits.GuildMessageReactions')
+
+    const v14Text = buildBotEntry(makeBotAnswers({ discordVersion: 'v14', commandMode: 'text' }))
+    expect(v14Text).toContain('GatewayIntentBits.GuildMessageReactions')
+
+    const v13Slash = buildBotEntry(makeBotAnswers({ discordVersion: 'v13', commandMode: 'slash' }))
+    expect(v13Slash).toContain('Intents.FLAGS.GUILD_MESSAGE_REACTIONS')
+
+    const v13Text = buildBotEntry(makeBotAnswers({ discordVersion: 'v13', commandMode: 'text' }))
+    expect(v13Text).toContain('Intents.FLAGS.GUILD_MESSAGE_REACTIONS')
   })
 
   it('wires only messageCreate for text-only', () => {
