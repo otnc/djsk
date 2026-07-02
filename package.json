@@ -1,6 +1,6 @@
 {
   "name": "djsk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Jishaku for Discord.js — a debugging and diagnostics toolkit for your bot.",
   "keywords": [
     "Discord",
