@@ -1,5 +1,5 @@
 import type { Context } from '../context'
-import { installPrototypeGuards } from '../prototype-guard'
+import { installPrototypeGuards, installRestGuard } from '../prototype-guard'
 import { guardOutbound } from '../security'
 import { inspectResult } from '../util/format'
 import { loadLibraryModule } from '../util/meta'
@@ -45,15 +45,21 @@ type WriteFn = typeof process.stdout.write
  * Temporarily wraps `process.stdout`/`process.stderr`'s `write()`, so `jsk js` can surface
  * everything written to the terminal during the eval — not just `console.*` (which itself
  * writes through these same streams under the hood), but also raw `process.stdout.write()`
- * calls and output from any library the user code touches. Real output keeps flowing through
- * unchanged. `restore()` undoes the wrapping and returns the captured text; safe to call more
- * than once.
+ * calls and output from any library the user code touches. `restore()` undoes the wrapping and
+ * returns the captured text; safe to call more than once.
+ *
+ * `scrub`, when given (security mode), is also applied to what actually reaches the real
+ * stream — not just the copy captured here for Discord — so a `console.log(client.token)`
+ * doesn't leak the token into the bot's own local output/logs either. `null` (the default
+ * outside security mode) leaves real output completely untouched, unchanged from before.
  *
  * This patches the process-wide streams for the eval's duration, so two `jsk js` evals
  * running concurrently would see each other's output in their capture — an accepted
  * trade-off for a single-owner debug tool.
  */
-function captureTerminalOutput(): { restore: () => string } {
+function captureTerminalOutput(scrub: ((text: string) => string) | null): {
+  restore: () => string
+} {
   const chunks: string[] = []
   const originalStdoutWrite: WriteFn = process.stdout.write
   const originalStderrWrite: WriteFn = process.stderr.write
@@ -64,15 +70,16 @@ function captureTerminalOutput(): { restore: () => string } {
   const wrap =
     (stream: NodeJS.WriteStream, original: WriteFn): WriteFn =>
     (chunk: unknown, ...rest: unknown[]) => {
-      chunks.push(
+      const text =
         typeof chunk === 'string'
           ? chunk
           : Buffer.isBuffer(chunk)
             ? chunk.toString('utf-8')
-            : String(chunk),
-      )
+            : String(chunk)
+      chunks.push(text)
+      const outgoing = scrub ? scrub(text) : chunk
       // biome-ignore lint/suspicious/noExplicitAny: forwarding Node's overloaded write(chunk, encoding?, callback?) verbatim.
-      return (original as any).apply(stream, [chunk, ...rest])
+      return (original as any).apply(stream, [outgoing, ...rest])
     }
 
   process.stdout.write = wrap(process.stdout, originalStdoutWrite)
@@ -143,16 +150,27 @@ const jsCommand: Command = {
     const argNames = Object.keys(scope)
     const argValues = Object.values(scope)
 
-    // In security mode, also guard the library's outbound methods for the duration of the eval
-    // so arbitrary Discord calls (any channel/webhook/interaction, raw REST wrappers) are scrubbed.
+    // In security mode, also guard the library's outbound methods (send/reply/edit/...) and,
+    // where the library exposes one, its lower-level REST class — for the duration of the eval
+    // — so arbitrary Discord calls (any channel/webhook/interaction, or a raw client.rest.post)
+    // are scrubbed too.
     let restoreGuards: (() => void) | null = null
+    let restoreRestGuard: (() => void) | null = null
     if (jsk.config.security) {
       const module = await loadLibraryModule()
-      if (module) restoreGuards = installPrototypeGuards(module, (text) => jsk.scrub(text))
+      if (module) {
+        restoreGuards = installPrototypeGuards(module, (text) => jsk.scrub(text))
+        restoreRestGuard = installRestGuard(module, (text) => jsk.scrub(text))
+      }
     }
 
     const task = jsk.submitTask('jsk js')
-    const capture = captureTerminalOutput()
+    // In security mode, also scrub what actually reaches the real terminal (not just the copy
+    // captured for Discord) — otherwise a `console.log(client.token)` still leaks it into the
+    // bot's own local logs, which may be shipped to a third-party service the operator doesn't
+    // fully trust. Off by default (matches the general "token redaction is always on, full
+    // scrubbing is opt-in" convention) so normal debugging output isn't silently altered.
+    const capture = captureTerminalOutput(jsk.config.security ? (text) => jsk.scrub(text) : null)
     try {
       const fn = compile(code, argNames)
       const result = await fn(...argValues)
@@ -164,6 +182,7 @@ const jsCommand: Command = {
       await sendResult(ctx, result, terminalOutput)
     } finally {
       capture.restore()
+      restoreRestGuard?.()
       restoreGuards?.()
       jsk.removeTask(task)
     }

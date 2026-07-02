@@ -121,3 +121,47 @@ describe('jsk js — terminal output capture', () => {
     }
   })
 })
+
+describe('jsk js — local terminal output scrubbing (security mode)', () => {
+  it('scrubs what actually reaches process.stdout in security mode, not just the Discord copy', async () => {
+    const { ctx } = makeContext('process.stdout.write(client.token)', makeJsk(true))
+    const originalWrite = process.stdout.write
+    // biome-ignore lint/suspicious/noExplicitAny: minimal stand-in for the real stream write.
+    const spy = vi.fn(() => true) as any
+    process.stdout.write = spy
+    try {
+      await jsCommand.handler(ctx)
+    } finally {
+      process.stdout.write = originalWrite
+    }
+
+    const written = spy.mock.calls.map((call: unknown[]) => call[0]).join('')
+    expect(written).not.toContain('t0ken-fake')
+    expect(written).toContain('[token omitted]')
+  })
+
+  it('leaves real process.stdout untouched outside security mode', async () => {
+    const { ctx } = makeContext('process.stdout.write(client.token)', makeJsk(false))
+    const originalWrite = process.stdout.write
+    // biome-ignore lint/suspicious/noExplicitAny: minimal stand-in for the real stream write.
+    const spy = vi.fn(() => true) as any
+    process.stdout.write = spy
+    try {
+      await jsCommand.handler(ctx)
+    } finally {
+      process.stdout.write = originalWrite
+    }
+
+    const written = spy.mock.calls.map((call: unknown[]) => call[0]).join('')
+    expect(written).toContain('t0ken-fake')
+  })
+
+  it('still restores the real process.stdout.write after a security-mode eval', async () => {
+    const originalWrite = process.stdout.write
+    const { ctx } = makeContext('process.stdout.write("hi")', makeJsk(true))
+
+    await jsCommand.handler(ctx)
+
+    expect(process.stdout.write).toBe(originalWrite)
+  })
+})
