@@ -39,15 +39,70 @@ function isMessage(value: any): boolean {
   )
 }
 
-async function sendResult(ctx: Context, result: unknown): Promise<void> {
-  if (result === undefined) return
-  if (isMessage(result)) {
-    // biome-ignore lint/suspicious/noExplicitAny: verified Message-like above.
-    const message = result as any
-    await ctx.send(`<Message ${message.url ?? message.id}>`)
-    return
+type WriteFn = typeof process.stdout.write
+
+/**
+ * Temporarily wraps `process.stdout`/`process.stderr`'s `write()`, so `jsk js` can surface
+ * everything written to the terminal during the eval — not just `console.*` (which itself
+ * writes through these same streams under the hood), but also raw `process.stdout.write()`
+ * calls and output from any library the user code touches. Real output keeps flowing through
+ * unchanged. `restore()` undoes the wrapping and returns the captured text; safe to call more
+ * than once.
+ *
+ * This patches the process-wide streams for the eval's duration, so two `jsk js` evals
+ * running concurrently would see each other's output in their capture — an accepted
+ * trade-off for a single-owner debug tool.
+ */
+function captureTerminalOutput(): { restore: () => string } {
+  const chunks: string[] = []
+  const originalStdoutWrite: WriteFn = process.stdout.write
+  const originalStderrWrite: WriteFn = process.stderr.write
+
+  // Calls the original via `.apply(stream, ...)` rather than a pre-bound reference, so
+  // `restore()` can put back the exact original function (not a `.bind()` wrapper around
+  // it) — otherwise repeated eval calls would pile up an ever-growing chain of bound wrappers.
+  const wrap =
+    (stream: NodeJS.WriteStream, original: WriteFn): WriteFn =>
+    (chunk: unknown, ...rest: unknown[]) => {
+      chunks.push(
+        typeof chunk === 'string'
+          ? chunk
+          : Buffer.isBuffer(chunk)
+            ? chunk.toString('utf-8')
+            : String(chunk),
+      )
+      // biome-ignore lint/suspicious/noExplicitAny: forwarding Node's overloaded write(chunk, encoding?, callback?) verbatim.
+      return (original as any).apply(stream, [chunk, ...rest])
+    }
+
+  process.stdout.write = wrap(process.stdout, originalStdoutWrite)
+  process.stderr.write = wrap(process.stderr, originalStderrWrite)
+
+  return {
+    restore: () => {
+      process.stdout.write = originalStdoutWrite
+      process.stderr.write = originalStderrWrite
+      return chunks.join('')
+    },
   }
-  await ctx.sendResult(inspectResult(result), 'output.js')
+}
+
+async function sendResult(ctx: Context, result: unknown, terminalOutput: string): Promise<void> {
+  const resultText = isMessage(result)
+    ? // biome-ignore lint/suspicious/noExplicitAny: verified Message-like above.
+      `<Message ${(result as any).url ?? (result as any).id}>`
+    : result === undefined
+      ? null
+      : inspectResult(result)
+
+  const parts: string[] = []
+  if (terminalOutput) parts.push(`\`\`\`\n${terminalOutput}\n\`\`\``)
+  if (resultText !== null) parts.push(resultText)
+  if (parts.length === 0) return
+
+  // Routed through ctx.sendResult (not a raw send) so the captured terminal output gets the
+  // same token redaction / security-mode secret scrubbing as everything else djsk sends.
+  await ctx.sendResult(parts.join('\n'), 'output.js')
 }
 
 const jsCommand: Command = {
@@ -97,15 +152,18 @@ const jsCommand: Command = {
     }
 
     const task = jsk.submitTask('jsk js')
+    const capture = captureTerminalOutput()
     try {
       const fn = compile(code, argNames)
       const result = await fn(...argValues)
+      const terminalOutput = capture.restore()
 
       if (jsk.retain) jsk.lastResult = result
 
       await ctx.react('✅')
-      await sendResult(ctx, result)
+      await sendResult(ctx, result, terminalOutput)
     } finally {
+      capture.restore()
       restoreGuards?.()
       jsk.removeTask(task)
     }
