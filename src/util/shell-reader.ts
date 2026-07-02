@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import type { Encoding } from '../types'
+import type { Encoding, ShellOverride } from '../types'
 
 const WINDOWS = process.platform === 'win32'
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -48,12 +48,18 @@ export interface ShellReaderOptions {
   timeout: number
   /** Called for each decoded, cleaned output line. */
   onLine: (line: string) => void
+  /** Overrides which shell to spawn, bypassing platform auto-detection entirely. */
+  shell?: ShellOverride | null
 }
 
 /**
  * Spawns the system shell for `code` and streams its output line by line.
  *
- * Windows uses PowerShell (falling back to cmd); other platforms use `$SHELL -c`.
+ * Windows uses PowerShell (falling back to cmd); other platforms use `$SHELL -c`. This
+ * auto-detection is skipped entirely when `options.shell` is set — the encoding workarounds
+ * below are specific to Windows PowerShell/cmd's legacy codepage behavior, which a custom
+ * shell (e.g. `pwsh`, `zsh`, `fish`) generally won't need.
+ *
  * Output is decoded with the configured encoding (UTF-8 or Shift_JIS) using a
  * streaming decoder so multibyte characters split across chunks are handled correctly.
  *
@@ -75,7 +81,12 @@ export class ShellReader {
 
     const label = toDecoderLabel(options.encoding)
 
-    if (WINDOWS) {
+    if (options.shell) {
+      command = options.shell.command
+      args = [...(options.shell.args ?? []), code]
+      this.ps1 = options.shell.ps1 ?? '$'
+      this.highlight = options.shell.highlight ?? 'ansi'
+    } else if (WINDOWS) {
       if (existsSync(POWERSHELL)) {
         command = 'powershell'
         args = [

@@ -28,6 +28,7 @@ const shellCommand: Command = {
     const reader = new ShellReader(code, {
       encoding: ctx.jsk.config.encoding,
       timeout: ctx.jsk.config.shellTimeout,
+      shell: ctx.jsk.config.shell,
       onLine: (line) => {
         output += `${line}\n`
         dirty = true
