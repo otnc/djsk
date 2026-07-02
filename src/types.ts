@@ -1,25 +1,58 @@
-import type { Client, Interaction, Message } from 'discord.js'
+import type {
+  Client as ClientV13,
+  Interaction as InteractionV13,
+  Message as MessageV13,
+} from 'discord.js-v13'
+import type {
+  Client as ClientV14,
+  Interaction as InteractionV14,
+  Message as MessageV14,
+} from 'discord.js-v14'
 
-/**
- * A discord.js (or compatible fork) Client.
- *
- * djsk is duck-typed at runtime, so any of discord.js v13/v14,
- * discord.js-selfbot-v13 or discord.js-selfbot-youtsuho-v13 clients are accepted.
- * The discord.js types are used purely for editor ergonomics.
- */
-export type AnyClient = Client
+// djsk is duck-typed at runtime — none of the AnyClient/AnyMessage/AnyInteraction unions below
+// are enforced — but discord.js v13 and v14 have meaningfully different shapes, so a
+// single-version type would silently show the wrong one for half of djsk's consumers.
+// `discord.js-v13`/`discord.js-v14` are `discord.js@13`/`discord.js@14` installed under
+// devDependency-only aliases (`npm:discord.js@...`), purely so both majors' types can be
+// imported side by side without a version conflict. `pnpm build:types` (dts-bundle-generator,
+// not tsup's own dts step — see tsup.config.ts) fully inlines both into the published .d.ts;
+// neither alias name may appear in the output, since consumers won't have either installed
+// under those names.
+//
+// The selfbot forks (discord.js-selfbot-v13, discord.js-selfbot-youtsuho-v13) don't publish
+// their own types and are v13-shaped, so they fall under the v13 side of these unions too.
 
-/** A discord.js (or compatible fork) Message. */
-export type AnyMessage = Message
+/** A discord.js (or compatible fork) Client. See the module-level comment for why this is a union. */
+export type AnyClient = ClientV13 | ClientV14
+
+/** A discord.js (or compatible fork) Message. See the module-level comment for why this is a union. */
+export type AnyMessage = MessageV13 | MessageV14
 
 /**
  * A discord.js (or compatible fork) Interaction (chat input command or modal submit).
- * The discord.js types are used purely for editor ergonomics; djsk duck-types at runtime.
+ * See the module-level comment for why this is a union.
  */
-export type AnyInteraction = Interaction
+export type AnyInteraction = InteractionV13 | InteractionV14
 
 /** Text decoding used when reading shell output. */
 export type Encoding = 'UTF-8' | 'Shift_JIS' | (string & {})
+
+/**
+ * Overrides which shell/terminal `jsk sh` spawns, instead of djsk's auto-detected default
+ * (PowerShell, falling back to `cmd`, on Windows; `$SHELL`, falling back to `/bin/bash`,
+ * everywhere else). Useful for PowerShell Core (`pwsh`), a specific shell (`zsh`, `fish`, ...),
+ * a non-default install path, WSL, or a sandboxed/containerized shell.
+ */
+export interface ShellOverride {
+  /** The command to spawn (e.g. `'pwsh'`, `'zsh'`, or a full path). */
+  command: string
+  /** Arguments passed before the code to run — the code itself is appended as the final argument. */
+  args?: string[]
+  /** Prompt shown before the command in the rendered output. Default: `'$'`. */
+  ps1?: string
+  /** Codeblock language used for the rendered output's syntax highlighting. Default: `'ansi'`. */
+  highlight?: string
+}
 
 /** User-facing configuration passed to {@link Jishaku}. */
 export interface JishakuConfig {
@@ -67,6 +100,8 @@ export interface JishakuConfig {
    * Default: `10000`.
    */
   evalTimeout?: number
+  /** Overrides which shell `jsk sh` spawns. Default: djsk's platform auto-detection. */
+  shell?: ShellOverride
 }
 
 /** Fully-resolved configuration with defaults applied. */
@@ -82,4 +117,5 @@ export interface ResolvedConfig {
   secretPatterns: RegExp[]
   secretValues: string[]
   evalTimeout: number
+  shell: ShellOverride | null
 }

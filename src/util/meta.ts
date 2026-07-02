@@ -1,7 +1,29 @@
+import { isPackageLatest } from 'is-package-latest'
 import pkg from '../../package.json'
 
 /** The current djsk version, read from package.json at build time. */
 export const DJSK_VERSION: string = pkg.version
+
+/** Result of a successful {@link checkForUpdate} check. */
+export interface UpdateCheckResult {
+  isLatest: boolean
+  latestVersion: string
+}
+
+/**
+ * Best-effort check of whether the installed djsk version is the latest published on npm.
+ * Never throws — returns `null` on any failure (offline, registry error, ...), which callers
+ * should treat as "nothing to report" rather than an error.
+ */
+export async function checkForUpdate(): Promise<UpdateCheckResult | null> {
+  try {
+    const result = await isPackageLatest({ name: 'djsk', version: DJSK_VERSION })
+    if (!result.success || !result.latestVersion) return null
+    return { isLatest: result.isLatest, latestVersion: result.latestVersion }
+  } catch {
+    return null
+  }
+}
 
 /** Package names of the supported discord.js-compatible libraries, in detection order. */
 const LIBRARY_CANDIDATES = [

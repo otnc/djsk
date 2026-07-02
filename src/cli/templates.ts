@@ -99,6 +99,10 @@ export function buildTsconfig(): Record<string, unknown> {
 function jishakuConfigBody(answers: Answers): string {
   const lines: string[] = []
 
+  if (answers.prefix !== '.') {
+    lines.push(`  prefix: '${answers.prefix}',`)
+  }
+
   if (answers.owners.length > 0) {
     lines.push(`  owners: [${answers.owners.map((id) => `'${id}'`).join(', ')}],`)
   } else {

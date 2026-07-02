@@ -4,7 +4,11 @@ export default defineConfig([
   {
     entry: { index: 'src/index.ts' },
     format: ['esm', 'cjs'],
-    dts: true,
+    // Declarations are generated separately (`pnpm build:types`, via dts-bundle-generator) —
+    // tsup's own bundled dts generator (rollup-plugin-dts) can't parse discord.js v13's
+    // typings at all (crashes on its Mixin-based `extends SomeFn(Base)` class declarations),
+    // so it can't produce the AnyClient/AnyMessage/AnyInteraction v13 | v14 union in types.ts.
+    dts: false,
     clean: true,
     treeshake: true,
     target: 'es2022',

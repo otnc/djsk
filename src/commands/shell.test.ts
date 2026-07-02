@@ -13,14 +13,18 @@ vi.mock('../util/shell-reader', () => ({
 }))
 
 const { shellCommands } = await import('./shell')
+const { ShellReader } = await import('../util/shell-reader')
 const shellCommand = shellCommands[0]
 
-function makeJsk(): Jishaku {
-  // biome-ignore lint/suspicious/noExplicitAny: minimal fake client for tests.
-  return new Jishaku({ token: 't0ken-fake' } as any, { consoleLog: false, shellTimeout: 5000 })
+function makeJsk(configOverrides: Record<string, unknown> = {}): Jishaku {
+  return new Jishaku(
+    // biome-ignore lint/suspicious/noExplicitAny: minimal fake client for tests.
+    { token: 't0ken-fake' } as any,
+    { consoleLog: false, shellTimeout: 5000, ...configOverrides },
+  )
 }
 
-function makeContext(code: string) {
+function makeContext(code: string, jsk: Jishaku = makeJsk()) {
   const sentMessage = {
     react: vi.fn(async () => {}),
     edit: vi.fn(async (payload: unknown) => ({ ...sentMessage, payload })),
@@ -30,7 +34,7 @@ function makeContext(code: string) {
   // biome-ignore lint/suspicious/noExplicitAny: minimal fake message for tests.
   const message = { channel: { send }, author: { id: 'owner-1' } } as any
   const source = { kind: 'message' as const, message }
-  const ctx = new Context(makeJsk(), source, 'sh', code)
+  const ctx = new Context(jsk, source, 'sh', code)
   return { ctx, send, sentMessage }
 }
 
@@ -91,5 +95,27 @@ describe('jsk sh — final output rendering', () => {
     await shellCommand.handler(ctx)
 
     expect(send).toHaveBeenCalled()
+  })
+
+  it('passes the configured shell override through to ShellReader', async () => {
+    stubReader(['hi'])
+    const shellOverride = { command: 'pwsh', args: ['-Command'] }
+    const jsk = makeJsk({ shell: shellOverride })
+    const { ctx } = makeContext('echo hi', jsk)
+
+    await shellCommand.handler(ctx)
+
+    const [, options] = vi.mocked(ShellReader).mock.calls.at(-1) as [string, { shell?: unknown }]
+    expect(options.shell).toBe(shellOverride)
+  })
+
+  it('passes shell: null through when no override is configured', async () => {
+    stubReader(['hi'])
+    const { ctx } = makeContext('echo hi')
+
+    await shellCommand.handler(ctx)
+
+    const [, options] = vi.mocked(ShellReader).mock.calls.at(-1) as [string, { shell?: unknown }]
+    expect(options.shell).toBeNull()
   })
 })
