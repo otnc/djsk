@@ -6,6 +6,7 @@ import { SecretScrubber } from './security'
 import { buildCodeModal, CODE_FIELD_ID, CODE_SUBCOMMANDS, subcommandFromModalId } from './slash'
 import type { AnyClient, AnyInteraction, AnyMessage, JishakuConfig, ResolvedConfig } from './types'
 import { escapeCodeblock, redactToken } from './util/format'
+import { checkForUpdate, DJSK_VERSION } from './util/meta'
 
 /** A tracked, potentially long-running djsk command invocation. */
 export interface CommandTask {
@@ -103,6 +104,16 @@ export class Jishaku {
     if (this.config.consoleLog) {
       const security = this.config.security ? ' (security mode ON)' : ''
       console.info(`[djsk] Initialized. Root command: ${this.config.prefix}jsk${security}`)
+
+      // Fire-and-forget: never blocks startup on a registry round-trip, and checkForUpdate
+      // never throws — a failed/offline check just means no notice, not a crash.
+      void checkForUpdate().then((result) => {
+        if (result && !result.isLatest) {
+          console.info(
+            `[djsk] A new version is available! Current: ${DJSK_VERSION}, Latest: ${result.latestVersion}. Update: npm i djsk@latest`,
+          )
+        }
+      })
     }
   }
 
