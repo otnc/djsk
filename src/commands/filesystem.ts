@@ -156,7 +156,9 @@ const curlCommand: Command = {
       data = await readTextLimited(response, MAX_RESPONSE_SIZE)
     } catch (error) {
       if (!(error instanceof ResponseTooLargeError)) throw error
-      await ctx.send(`Refusing to download a response larger than ${naturalSize(MAX_RESPONSE_SIZE)}.`)
+      await ctx.send(
+        `Refusing to download a response larger than ${naturalSize(MAX_RESPONSE_SIZE)}.`,
+      )
       return
     }
 

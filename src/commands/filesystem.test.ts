@@ -120,7 +120,9 @@ describe('jsk curl — timeout and size guarding', () => {
         controller.close()
       },
     })
-    global.fetch = vi.fn(async () => new Response(stream, { status: 200 })) as unknown as typeof fetch
+    global.fetch = vi.fn(
+      async () => new Response(stream, { status: 200 }),
+    ) as unknown as typeof fetch
 
     const { ctx, send } = makeContext('curl', 'https://example.com/unbounded')
 
