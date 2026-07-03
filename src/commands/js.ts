@@ -2,7 +2,7 @@ import vm from 'node:vm'
 import type { Context } from '../context'
 import { installPrototypeGuards, installRestGuard } from '../prototype-guard'
 import { guardOutbound } from '../security'
-import { inspectResult } from '../util/format'
+import { inspectResult, stripAnsi } from '../util/format'
 import { loadLibraryModule } from '../util/meta'
 import type { Command } from './registry'
 
@@ -184,7 +184,11 @@ function captureTerminalOutput(scrub: ((text: string) => string) | null): {
           : Buffer.isBuffer(chunk)
             ? chunk.toString('utf-8')
             : String(chunk)
-      chunks.push(text)
+      // Stripped for the Discord-bound capture only — colors are decided by whether the
+      // *real* stdout/stderr is a TTY, which has nothing to do with whether this is headed to
+      // Discord (not a terminal), so raw escape codes would otherwise show up as literal
+      // garbage (see stripAnsi's doc comment). The real stream output is left untouched.
+      chunks.push(stripAnsi(text))
       const outgoing = scrub ? scrub(text) : chunk
       // biome-ignore lint/suspicious/noExplicitAny: forwarding Node's overloaded write(chunk, encoding?, callback?) verbatim.
       return (original as any).apply(stream, [outgoing, ...rest])
