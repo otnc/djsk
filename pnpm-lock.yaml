@@ -17,6 +17,9 @@ importers:
       consola:
         specifier: ^3.4.2
         version: 3.4.2
+      discord.js:
+        specifier: ^14.0.0 || ^13.0.0
+        version: 14.26.4
       discord.js-selfbot-v13:
         specifier: '*'
         version: 3.7.1
@@ -30,9 +33,6 @@ importers:
       '@biomejs/biome':
         specifier: ^2.5.1
         version: 2.5.1
-      discord.js:
-        specifier: latest
-        version: 14.26.4
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(postcss@8.5.16)(typescript@6.0.3)
