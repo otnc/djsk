@@ -124,22 +124,24 @@ function jishakuConfigBody(answers: Answers): string {
 export function buildBotEntry(answers: Extract<Answers, { kind: 'bot' }>): string {
   const wantsText = answers.commandMode === 'text' || answers.commandMode === 'slash+text'
   const wantsSlash = answers.commandMode === 'slash' || answers.commandMode === 'slash+text'
+  // Compared as "14 or later" rather than `=== 'v14'` so a future `BotDiscordVersion` major
+  // (e.g. `'v15'`) falls into the modern branch automatically instead of silently regressing
+  // to the v13-era API.
+  const isV14OrLater = Number(answers.discordVersion.slice(1)) >= 14
 
   // GuildMessageReactions is always included: long `jsk js`/`sh`/etc. output is paginated
   // with ⬅️/➡️ reactions, which needs this intent to receive the collector's reaction events.
-  const intents =
-    answers.discordVersion === 'v14'
-      ? wantsText
-        ? '[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageReactions]'
-        : '[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessageReactions]'
-      : wantsText
-        ? '[Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.MESSAGE_CONTENT, Intents.FLAGS.GUILD_MESSAGE_REACTIONS]'
-        : '[Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGE_REACTIONS]'
+  const intents = isV14OrLater
+    ? wantsText
+      ? '[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageReactions]'
+      : '[GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessageReactions]'
+    : wantsText
+      ? '[Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.MESSAGE_CONTENT, Intents.FLAGS.GUILD_MESSAGE_REACTIONS]'
+      : '[Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGE_REACTIONS]'
 
-  const importLine =
-    answers.discordVersion === 'v14'
-      ? "import { Client, GatewayIntentBits } from 'discord.js'"
-      : "import { Client, Intents } from 'discord.js'"
+  const importLine = isV14OrLater
+    ? "import { Client, GatewayIntentBits } from 'discord.js'"
+    : "import { Client, Intents } from 'discord.js'"
 
   const wiring = [
     wantsText ? "client.on('messageCreate', (message) => jsk.onMessageCreated(message))" : null,
@@ -160,7 +162,7 @@ const jsk = new Jishaku(client, {
 ${jishakuConfigBody(answers)}
 })
 
-client.once('ready', (readyClient) => {
+client.once('${isV14OrLater ? 'clientReady' : 'ready'}', (readyClient) => {
   console.log(\`Ready! Logged in as \${readyClient.user.tag}\`)
 })
 
