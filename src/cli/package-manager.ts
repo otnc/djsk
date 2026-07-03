@@ -18,17 +18,17 @@ export function detectPackageManager(env: NodeJS.ProcessEnv = process.env): Pack
   return (KNOWN as readonly string[]).includes(name) ? (name as PackageManager) : 'npm'
 }
 
-/** The install command/args for `pm`, run with the working directory set to the project root. */
-function installCommand(pm: PackageManager): { command: string; args: string[] } {
+/** The install command line for `pm`, run with the working directory set to the project root. */
+function installCommand(pm: PackageManager): string {
   switch (pm) {
     case 'pnpm':
-      return { command: 'pnpm', args: ['install'] }
+      return 'pnpm install'
     case 'yarn':
-      return { command: 'yarn', args: ['install'] }
+      return 'yarn install'
     case 'bun':
-      return { command: 'bun', args: ['install'] }
+      return 'bun install'
     default:
-      return { command: 'npm', args: ['install'] }
+      return 'npm install'
   }
 }
 
@@ -37,11 +37,12 @@ function installCommand(pm: PackageManager): { command: string; args: string[] }
  * stdio. Resolves with the exit code (0 on success).
  */
 export function runInstall(pm: PackageManager, cwd: string): Promise<number> {
-  const { command, args } = installCommand(pm)
-
   return new Promise((resolve) => {
     // npm/yarn/pnpm/bun are batch files (.cmd) on Windows; shell:true resolves them correctly.
-    const child = spawn(command, args, { cwd, stdio: 'inherit', shell: true })
+    // The command line is a fixed constant (never built from user input), so it's passed as a
+    // single string rather than a separate `args` array — passing `args` alongside
+    // `shell: true` is deprecated (DEP0190) since Node only concatenates them unescaped.
+    const child = spawn(installCommand(pm), { cwd, stdio: 'inherit', shell: true })
     child.on('close', (code) => resolve(code ?? 1))
     child.on('error', () => resolve(1))
   })
