@@ -224,6 +224,16 @@ describe('buildBotEntry', () => {
     const defaultPrefix = buildBotEntry(makeBotAnswers({ prefix: '.' }))
     expect(defaultPrefix).not.toMatch(/^\s*prefix:/m)
   })
+
+  it('uses clientReady for v14 and ready for v13', () => {
+    const v14 = buildBotEntry(makeBotAnswers({ discordVersion: 'v14' }))
+    expect(v14).toContain("client.once('clientReady', (readyClient) => {")
+    expect(v14).not.toContain("client.once('ready',")
+
+    const v13 = buildBotEntry(makeBotAnswers({ discordVersion: 'v13' }))
+    expect(v13).toContain("client.once('ready', (readyClient) => {")
+    expect(v13).not.toContain('clientReady')
+  })
 })
 
 describe('buildSelfbotEntry', () => {
