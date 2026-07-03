@@ -1,5 +1,3 @@
-import type { AnyClient } from './types'
-
 /**
  * Best-effort secret redaction for security mode.
  *
@@ -54,7 +52,9 @@ export class SecretScrubber {
   private readonly extraValues: string[]
 
   constructor(
-    private readonly client: AnyClient,
+    // `unknown`, not `AnyClient`: `Jishaku`'s client is generic (see jishaku.ts) so any concrete
+    // client type may flow in here — this is cast to `any` below regardless (duck-typed at runtime).
+    private readonly client: unknown,
     options: ScrubberOptions = {},
   ) {
     this.patterns = [...BUILTIN_PATTERNS, ...(options.patterns ?? [])]
