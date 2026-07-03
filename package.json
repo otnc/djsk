@@ -69,9 +69,15 @@
     "discord.js-selfbot-youtsuho-v13": "*"
   },
   "peerDependenciesMeta": {
-    "discord.js": { "optional": true },
-    "discord.js-selfbot-v13": { "optional": true },
-    "discord.js-selfbot-youtsuho-v13": { "optional": true }
+    "discord.js": {
+      "optional": true
+    },
+    "discord.js-selfbot-v13": {
+      "optional": true
+    },
+    "discord.js-selfbot-youtsuho-v13": {
+      "optional": true
+    }
   },
   "dependencies": {
     "chalk": "^5.6.2",
