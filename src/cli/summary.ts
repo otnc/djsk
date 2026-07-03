@@ -30,7 +30,13 @@ function buildTodos(answers: Answers): string[] {
   return todos
 }
 
-/** Prints the final summary box: what was scaffolded, and any Next Step (TODO) items. */
+/**
+ * Prints the final summary: what was scaffolded, and any Next Step (TODO) items.
+ *
+ * Plain lines rather than `consola.box` — a box's border width is fixed to its longest line,
+ * so it visually breaks (wrapped/misaligned borders) once that exceeds the terminal width.
+ * Plain text just soft-wraps like any other terminal output.
+ */
 export function printSummary(answers: Answers, writtenFiles: string[], pm: PackageManager): void {
   const todos = buildTodos(answers)
   const runner = pm === 'npm' ? 'npm run' : pm
@@ -38,21 +44,20 @@ export function printSummary(answers: Answers, writtenFiles: string[], pm: Packa
   // package.json script named "deploy" — `pnpm run deploy` is required to actually run ours.
   const scriptRunner = pm === 'npm' ? 'npm run' : `${pm} run`
 
-  const lines: string[] = [
+  consola.success(
     `Scaffolded ${writtenFiles.length} file${writtenFiles.length === 1 ? '' : 's'} in ${answers.directory}`,
-    '',
-    `cd ${answers.directory}`,
-    answers.format === 'ts' ? `${runner} dev` : `${runner} start`,
-  ]
+  )
+  consola.log('')
+  consola.log(`  cd ${answers.directory}`)
+  consola.log(`  ${answers.format === 'ts' ? `${runner} dev` : `${runner} start`}`)
 
   if (answers.kind === 'bot' && answers.commandMode !== 'text') {
-    lines.push(`${scriptRunner} deploy   # registers the slash command`)
+    consola.log(`  ${scriptRunner} deploy   # registers the slash command`)
   }
 
   if (todos.length > 0) {
-    lines.push('', 'Next Steps (TODO):')
-    for (const todo of todos) lines.push(`  - ${todo}`)
+    consola.log('')
+    consola.info('Next Steps (TODO):')
+    for (const todo of todos) consola.log(`  - ${todo}`)
   }
-
-  consola.box(lines.join('\n'))
 }
