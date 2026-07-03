@@ -28,8 +28,14 @@ export type ContextSource =
  */
 export class Context {
   constructor(
-    /** The owning Jishaku instance (config, client, task registry, REPL scope). */
-    readonly jsk: Jishaku,
+    /**
+     * The owning Jishaku instance (config, client, task registry, REPL scope).
+     * `Jishaku<any>`, not the bare (`AnyClient`-defaulted) `Jishaku`: `Jishaku`'s client type
+     * is generic per-instance (see jishaku.ts), and `any` absorbs whichever concrete type that
+     * instance was constructed with without needing a cast at every call site.
+     */
+    // biome-ignore lint/suspicious/noExplicitAny: absorbs Jishaku<C> for any concrete client type C.
+    readonly jsk: Jishaku<any>,
     /** What triggered this command. */
     readonly source: ContextSource,
     /** The resolved subcommand name (empty string for the bare `jsk` status command). */

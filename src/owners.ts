@@ -1,5 +1,3 @@
-import type { AnyClient } from './types'
-
 /**
  * Resolves and checks which users are allowed to use djsk.
  *
@@ -14,7 +12,9 @@ export class OwnerResolver {
   private resolving: Promise<Set<string>> | null = null
 
   constructor(
-    private readonly client: AnyClient,
+    // `unknown`, not `AnyClient`: `Jishaku`'s client is generic (see jishaku.ts) so any concrete
+    // client type may flow in here — this is cast to `any` below regardless (duck-typed at runtime).
+    private readonly client: unknown,
     configOwners: string[] | null,
   ) {
     this.explicit = configOwners && configOwners.length > 0 ? new Set(configOwners) : null

@@ -76,7 +76,15 @@ function resolveConfig(config: JishakuConfig): ResolvedConfig {
  * client.on('messageCreate', (m) => jsk.onMessageCreated(m))
  * ```
  */
-export class Jishaku {
+// `client`/`onMessageCreated`/`onInteractionCreate` are generic — deliberately *unconstrained*
+// (not `C extends AnyClient`) — so TypeScript infers the exact concrete type you pass in rather
+// than checking it against (and narrowing it down to) the AnyClient/AnyMessage/AnyInteraction
+// fallback. This is what makes v13, v14 and both selfbot forks all type-check correctly with
+// full, accurate autocomplete: a constrained generic would still perform that assignability
+// check at the boundary, which is exactly what breaks for an inlined/foreign declaration (see
+// the module comment in types.ts). Internally these are cast back to the fallback types (or
+// `any`) since djsk only ever duck-types them at runtime anyway.
+export class Jishaku<C = AnyClient> {
   readonly config: ResolvedConfig
   readonly owners: OwnerResolver
   private readonly scrubber: SecretScrubber
@@ -92,7 +100,7 @@ export class Jishaku {
   private taskCounter = 0
 
   constructor(
-    readonly client: AnyClient,
+    readonly client: C,
     config: JishakuConfig = {},
   ) {
     this.config = resolveConfig(config)
@@ -161,7 +169,7 @@ export class Jishaku {
    * Ignores messages that don't target the djsk root command or whose author
    * is not an owner. Never throws — command errors are reported to the channel.
    */
-  async onMessageCreated(message: AnyMessage): Promise<void> {
+  async onMessageCreated<M = AnyMessage>(message: M): Promise<void> {
     // biome-ignore lint/suspicious/noExplicitAny: content/author are duck-typed across libraries.
     const raw = message as any
     const content: unknown = raw?.content
@@ -175,7 +183,7 @@ export class Jishaku {
     if (!(await this.owners.isOwner(String(authorId)))) return
 
     const { name, rawArgs } = splitCommand(rest)
-    const source = { kind: 'message' as const, message }
+    const source = { kind: 'message' as const, message: raw as AnyMessage }
 
     if (name === '') {
       await this.run(new Context(this, source, '', ''), statusCommand)
@@ -199,7 +207,7 @@ export class Jishaku {
    * plus the code-input modals that `js`/`sh` show instead of taking a string option. Ignores
    * anything else. Never throws — command errors are reported back through the interaction.
    */
-  async onInteractionCreate(interaction: AnyInteraction): Promise<void> {
+  async onInteractionCreate<I = AnyInteraction>(interaction: I): Promise<void> {
     // biome-ignore lint/suspicious/noExplicitAny: interaction shapes are duck-typed across libraries.
     const raw = interaction as any
 

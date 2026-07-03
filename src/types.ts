@@ -1,38 +1,35 @@
-import type {
-  Client as ClientV13,
-  Interaction as InteractionV13,
-  Message as MessageV13,
-} from 'discord.js-v13'
-import type {
-  Client as ClientV14,
-  Interaction as InteractionV14,
-  Message as MessageV14,
-} from 'discord.js-v14'
+import type { Client, Interaction, Message } from 'discord.js'
 
-// djsk is duck-typed at runtime — none of the AnyClient/AnyMessage/AnyInteraction unions below
-// are enforced — but discord.js v13 and v14 have meaningfully different shapes, so a
-// single-version type would silently show the wrong one for half of djsk's consumers.
-// `discord.js-v13`/`discord.js-v14` are `discord.js@13`/`discord.js@14` installed under
-// devDependency-only aliases (`npm:discord.js@...`), purely so both majors' types can be
-// imported side by side without a version conflict. `pnpm build:types` (dts-bundle-generator,
-// not tsup's own dts step — see tsup.config.ts) fully inlines both into the published .d.ts;
-// neither alias name may appear in the output, since consumers won't have either installed
-// under those names.
+// djsk is duck-typed at runtime and works with discord.js v13/v14 and the selfbot forks
+// (discord.js-selfbot-v13, discord.js-selfbot-youtsuho-v13) alike — none of these types are
+// actually enforced. They exist purely for editor ergonomics, and only matter as *fallbacks*:
+// `Jishaku` and its `onMessageCreated`/`onInteractionCreate` handlers are generic over the
+// concrete client/message/interaction type you pass in (see jishaku.ts), so in practice your
+// editor infers and shows the exact shape of whatever you actually installed — these are only
+// used when that can't be inferred.
 //
-// The selfbot forks (discord.js-selfbot-v13, discord.js-selfbot-youtsuho-v13) don't publish
-// their own types and are v13-shaped, so they fall under the v13 side of these unions too.
+// These must stay a plain external reference to the real `discord.js` package rather than a
+// bundled/inlined type (as a previous version of this file did, importing `discord.js-v13`/
+// `discord.js-v14` aliases and fully inlining both into the published .d.ts): discord.js's
+// classes carry private fields, which TypeScript treats as nominally typed — identical only
+// when they originate from the exact same declaration. An inlined copy of `Client` is a
+// *different* declaration from the real `Client` a consumer's own `discord.js` install
+// resolves to, so passing their client into anything typed with the inlined version always
+// fails to type-check, even on a matching version. A plain external import resolves against
+// whatever `discord.js` is hoisted in the consumer's own node_modules, so it's always the
+// exact same declaration — no mismatch possible.
 
-/** A discord.js (or compatible fork) Client. See the module-level comment for why this is a union. */
-export type AnyClient = ClientV13 | ClientV14
+/** A discord.js (or compatible fork) Client. See the module-level comment for why this matters. */
+export type AnyClient = Client
 
-/** A discord.js (or compatible fork) Message. See the module-level comment for why this is a union. */
-export type AnyMessage = MessageV13 | MessageV14
+/** A discord.js (or compatible fork) Message. See the module-level comment for why this matters. */
+export type AnyMessage = Message
 
 /**
  * A discord.js (or compatible fork) Interaction (chat input command or modal submit).
- * See the module-level comment for why this is a union.
+ * See the module-level comment for why this matters.
  */
-export type AnyInteraction = InteractionV13 | InteractionV14
+export type AnyInteraction = Interaction
 
 /** Text decoding used when reading shell output. */
 export type Encoding = 'UTF-8' | 'Shift_JIS' | (string & {})
