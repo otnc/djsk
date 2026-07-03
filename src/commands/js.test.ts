@@ -118,6 +118,23 @@ describe('jsk js — terminal output capture', () => {
     expect(payload.content).not.toContain('[33m')
   })
 
+  it('keeps codeblock fences on every page when terminal output needs pagination', async () => {
+    const { ctx, send } = makeContext("process.stdout.write('x'.repeat(3000))")
+
+    await jsCommand.handler(ctx)
+
+    // Terminal output alone already exceeds the message limit, so it must be sent through the
+    // codeblock-aware pagination (one message per fenced page) rather than combined with the
+    // result into one oversized string and split at fixed offsets — which would only leave the
+    // fences intact at the very start of page 1 and the very end of the last page.
+    expect(send).toHaveBeenCalled()
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content.startsWith('```\n')).toBe(true)
+    const closeIndex = payload.content.indexOf('```', 4)
+    expect(closeIndex).toBeGreaterThan(-1)
+    expect(payload.content.slice(closeIndex)).toMatch(/^```\n-- Page 1\/\d+ --$/)
+  })
+
   it('does not scrub non-token secrets when security mode is off', async () => {
     process.env.JS_TEST_SECRET_KEY_2 = 'another-secret-value-654321'
     try {

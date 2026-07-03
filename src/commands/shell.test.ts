@@ -73,6 +73,39 @@ describe('jsk sh — final output rendering', () => {
     expect(sentMessage.react).toHaveBeenCalledWith('➡️')
   })
 
+  it('keeps codeblock fences on every page, both the initial (tail) page and after paging', async () => {
+    stubReader(['x'.repeat(3000)])
+    const { ctx, sentMessage } = makeContext('echo big')
+
+    await shellCommand.handler(ctx)
+
+    // The initial render (last page, tail-first) is set via a plain-string edit, unlike
+    // `jsk js`'s old bug — `jsk sh` has always built every page through `wrapPages`'
+    // prefix/suffix (see format.ts), which re-wraps each page's own fences, rather than
+    // wrapping the whole output once and paginating that as one codeblock-unaware blob.
+    const [initialContent] = sentMessage.edit.mock.calls[0] as [string]
+    expect(initialContent.startsWith('```powershell\n')).toBe(true)
+    const closeIndex = initialContent.indexOf('```', 4)
+    expect(closeIndex).toBeGreaterThan(-1)
+    expect(initialContent.slice(closeIndex)).toMatch(/^```\n-- Page \d+\/\d+ --$/)
+
+    // Page backward via ⬅️ and check the newly-rendered page also has both fences.
+    const collector = sentMessage.createReactionCollector.mock.results[0].value as EventEmitter
+    collector.emit(
+      'collect',
+      { emoji: { name: '⬅️' }, users: { remove: vi.fn(async () => {}) } },
+      { id: 'owner-1', bot: false },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const lastEditCall = sentMessage.edit.mock.calls.at(-1) as [{ content: string }]
+    const pagedContent = lastEditCall[0].content
+    expect(pagedContent.startsWith('```powershell\n')).toBe(true)
+    const pagedCloseIndex = pagedContent.indexOf('```', 4)
+    expect(pagedCloseIndex).toBeGreaterThan(-1)
+    expect(pagedContent.slice(pagedCloseIndex)).toMatch(/^```\n-- Page \d+\/\d+ --$/)
+  })
+
   it('falls back to a file attachment (in addition to the tail) for very large output', async () => {
     stubReader(['x'.repeat(25000)])
     const { ctx, send, sentMessage } = makeContext('echo huge')
@@ -117,5 +150,57 @@ describe('jsk sh — final output rendering', () => {
 
     const [, options] = vi.mocked(ShellReader).mock.calls.at(-1) as [string, { shell?: unknown }]
     expect(options.shell).toBeNull()
+  })
+
+  it('does not send a duplicate message when a periodic flush is still in flight when the command finishes', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveDone: (code: number) => void = () => {}
+      const done = new Promise<number>((resolve) => {
+        resolveDone = resolve
+      })
+
+      let resolveFirstSend: (value: unknown) => void = () => {}
+      const firstSend = new Promise((resolve) => {
+        resolveFirstSend = resolve
+      })
+
+      fakeReaderImpl = (_code, options) => {
+        options.onLine('some output')
+        return { ps1: 'PS >', highlight: 'powershell', done, kill: vi.fn() }
+      }
+
+      const sentMessage = {
+        react: vi.fn(async () => {}),
+        edit: vi.fn(async (payload: unknown) => ({ ...sentMessage, payload })),
+        createReactionCollector: vi.fn(() => new EventEmitter()),
+      }
+      // biome-ignore lint/suspicious/noExplicitAny: minimal test double.
+      const send = vi.fn((): any => (send.mock.calls.length === 1 ? firstSend : sentMessage))
+      // biome-ignore lint/suspicious/noExplicitAny: minimal fake message for tests.
+      const message = { channel: { send }, author: { id: 'owner-1' } } as any
+      const ctx = new Context(makeJsk(), { kind: 'message', message }, 'sh', 'echo hi')
+
+      const handlerPromise = shellCommand.handler(ctx)
+
+      // Let the periodic flush fire once, kicking off an in-flight ctx.send() that won't
+      // resolve yet — simulating a slow Discord API response.
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(send).toHaveBeenCalledTimes(1)
+
+      // The command "finishes" while that send is still pending.
+      resolveDone(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Now let the in-flight send resolve.
+      resolveFirstSend(sentMessage)
+      await handlerPromise
+
+      // Only one message for this single, short output — not a second, independent one racing
+      // the in-flight periodic flush.
+      expect(send).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
