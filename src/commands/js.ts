@@ -2,7 +2,7 @@ import vm from 'node:vm'
 import type { Context } from '../context'
 import { installPrototypeGuards, installRestGuard } from '../prototype-guard'
 import { guardOutbound } from '../security'
-import { inspectResult, stripAnsi } from '../util/format'
+import { inspectResult, MESSAGE_LIMIT, stripAnsi } from '../util/format'
 import { loadLibraryModule } from '../util/meta'
 import type { Command } from './registry'
 
@@ -206,6 +206,45 @@ function captureTerminalOutput(scrub: ((text: string) => string) | null): {
   }
 }
 
+/**
+ * Sends `terminalOutput` (wrapped in a codeblock) followed by `text` (plain), preferring a
+ * single combined message when it fits.
+ *
+ * When it doesn't fit, the two are sent as separate, independently-paginated messages instead
+ * of combining them into one oversized string and handing that to {@link Context.sendResult}:
+ * that pagination is codeblock-*unaware* (by design — it's also used for plain results with no
+ * codeblock at all), so it slices the combined text at fixed byte offsets with no regard for
+ * where the codeblock's fences landed. The fences only happen to survive at the very start of
+ * page 1 and the very end of the last page; every page in between is missing both, since
+ * nothing re-opens/re-closes the codeblock at the split points. Sending `terminalOutput`
+ * through {@link Context.sendCodeblock} instead re-wraps every page in its own fences.
+ */
+async function sendTerminalAndText(
+  ctx: Context,
+  terminalOutput: string,
+  text: string | null,
+  filename: string,
+): Promise<void> {
+  if (!terminalOutput) {
+    if (text !== null) await ctx.sendResult(text, filename)
+    return
+  }
+
+  const codeblock = `\`\`\`\n${terminalOutput}\n\`\`\``
+  const combined = text !== null ? `${codeblock}\n${text}` : codeblock
+
+  // Matches Context.sendResult's own scrubbed-length check, so this decides on the same basis
+  // it will (scrubbing doesn't reliably preserve length, and ctx.sendResult scrubs again below
+  // regardless — redaction is idempotent, so double-scrubbing is harmless).
+  if (ctx.jsk.scrub(combined).length <= MESSAGE_LIMIT) {
+    await ctx.sendResult(combined, filename)
+    return
+  }
+
+  await ctx.sendCodeblock(terminalOutput, '', filename)
+  if (text !== null) await ctx.sendResult(text, filename)
+}
+
 async function sendResult(ctx: Context, result: unknown, terminalOutput: string): Promise<void> {
   const resultText = isMessage(result)
     ? // biome-ignore lint/suspicious/noExplicitAny: verified Message-like above.
@@ -214,14 +253,12 @@ async function sendResult(ctx: Context, result: unknown, terminalOutput: string)
       ? null
       : inspectResult(result)
 
-  const parts: string[] = []
-  if (terminalOutput) parts.push(`\`\`\`\n${terminalOutput}\n\`\`\``)
-  if (resultText !== null) parts.push(resultText)
-  if (parts.length === 0) return
+  if (!terminalOutput && resultText === null) return
 
-  // Routed through ctx.sendResult (not a raw send) so the captured terminal output gets the
-  // same token redaction / security-mode secret scrubbing as everything else djsk sends.
-  await ctx.sendResult(parts.join('\n'), 'output.js')
+  // Routed through sendTerminalAndText (which itself routes through ctx.sendResult/
+  // sendCodeblock, not a raw send) so the captured terminal output gets the same token
+  // redaction / security-mode secret scrubbing as everything else djsk sends.
+  await sendTerminalAndText(ctx, terminalOutput, resultText, 'output.js')
 }
 
 const jsCommand: Command = {
@@ -359,10 +396,7 @@ const jsCommand: Command = {
 
       if (error instanceof EvalTimedOutError) {
         await ctx.react('⏱️')
-        const parts = terminalOutput
-          ? [`\`\`\`\n${terminalOutput}\n\`\`\``, error.message]
-          : [error.message]
-        await ctx.sendResult(parts.join('\n'), 'output.js')
+        await sendTerminalAndText(ctx, terminalOutput, error.message, 'output.js')
         return
       }
 

@@ -56,8 +56,20 @@ const shellCommand: Command = {
       }
     }
 
+    // Serializes flush() calls through a single chain (never more than one send/edit request in
+    // flight at once), so awaiting it always means "whatever was pending has now fully settled
+    // `message`" — including a call the periodic interval already kicked off. Without this, the
+    // final render below could still see `message` as `null` while an interval-triggered flush
+    // is mid-`ctx.send()`, and would send a second, independent message for the same output
+    // instead of reusing/editing the one already in flight.
+    let flushChain: Promise<void> = Promise.resolve()
+    const runFlush = (): Promise<void> => {
+      flushChain = flushChain.then(flush)
+      return flushChain
+    }
+
     const task = ctx.jsk.submitTask('jsk sh', () => reader.kill())
-    const interval = setInterval(() => void flush(), EDIT_INTERVAL)
+    const interval = setInterval(() => void runFlush(), EDIT_INTERVAL)
 
     try {
       const exitCode = await reader.done
@@ -67,6 +79,11 @@ const shellCommand: Command = {
       clearInterval(interval)
       ctx.jsk.removeTask(task)
     }
+
+    // Drain the flush chain (including anything still in flight from the interval) before
+    // touching `message` below — see runFlush's doc comment. This also performs the final
+    // tail-render (with the exit code appended above) for the common case.
+    await runFlush()
 
     // Final render: like `jsk js`, output that doesn't fit in one message gets ⬅️/➡️
     // pagination over the FULL output (not just the live tail) instead of staying
@@ -78,12 +95,10 @@ const shellCommand: Command = {
     const pages = wrapPages(output, { prefix, suffix: '```', maxSize: 1940 })
 
     if (pages.length <= 1) {
-      await flush()
       return
     }
 
     if (pages.length > MAX_PAGINATED_PAGES) {
-      await flush()
       await ctx.send({ files: [toFile('output.txt', output)] })
       return
     }
