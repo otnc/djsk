@@ -1,13 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import type { Encoding, ShellOverride } from '../types'
+import { stripAnsi } from './format'
 
 const WINDOWS = process.platform === 'win32'
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-
-// Matches ANSI escape sequences (colors, cursor movement, etc.).
-// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping terminal control codes.
-const ANSI_ESCAPE = /\x1b\[[0-9;?]*[A-Za-z]/g
 
 const ZWSP = '​'
 
@@ -39,7 +36,7 @@ function cmdCodepage(label: string): number {
 }
 
 function cleanLine(line: string): string {
-  return line.replace(ANSI_ESCAPE, '').replace('\r', '').replaceAll('```', `\`\`${ZWSP}\``)
+  return stripAnsi(line).replace('\r', '').replaceAll('```', `\`\`${ZWSP}\``)
 }
 
 export interface ShellReaderOptions {

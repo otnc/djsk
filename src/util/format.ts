@@ -13,6 +13,24 @@ export const MAX_PAGINATED_PAGES = 10
 /** Zero-width space used to defuse backtick sequences inside codeblocks. */
 const ZWSP = '​'
 
+// Matches ANSI escape sequences (colors, cursor movement, etc.).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping terminal control codes.
+const ANSI_ESCAPE = /\x1b\[[0-9;?]*[A-Za-z]/g
+
+/**
+ * Strips ANSI escape sequences (colors, cursor movement, ...) from `text`.
+ *
+ * Discord code blocks aren't a real terminal, so raw escape codes just show up as visible
+ * garbage (e.g. `console.log(42)` under a color-capable stdout emits `\x1b[33m42\x1b[39m`,
+ * which renders as literal `[33m42[39m` once the non-printable ESC byte is gone). Node's
+ * `console`/`util.inspect` decide whether to colorize based on whether the *real* stdout/stderr
+ * is a TTY — which has nothing to do with whether the output is actually headed to Discord —
+ * so captured terminal output always needs this before being sent, regardless of environment.
+ */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE, '')
+}
+
 /**
  * Represents a raw file attachment payload accepted by both discord.js v13 and v14
  * (`{ attachment, name }`), avoiding version-specific builder classes.

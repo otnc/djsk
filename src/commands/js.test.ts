@@ -105,6 +105,19 @@ describe('jsk js — terminal output capture', () => {
     }
   })
 
+  it('strips ANSI color codes from captured terminal output', async () => {
+    // Mirrors what `console.log(42)` writes when the real stdout is a TTY (colors enabled) —
+    // unrelated to whether the output is headed to Discord, so it must be stripped regardless.
+    const { ctx, send } = makeContext('process.stdout.write("\\x1b[33m42\\x1b[39m\\n")')
+
+    await jsCommand.handler(ctx)
+
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toContain('42')
+    expect(payload.content).not.toContain('\x1b')
+    expect(payload.content).not.toContain('[33m')
+  })
+
   it('does not scrub non-token secrets when security mode is off', async () => {
     process.env.JS_TEST_SECRET_KEY_2 = 'another-secret-value-654321'
     try {
