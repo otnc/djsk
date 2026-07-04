@@ -28,6 +28,8 @@ The original jishaku (Discord.py) is [here](https://github.com/Gorialis/jishaku)
 ## Features
 
 - **`jsk js`** — Evaluate JavaScript in the running process (async, with token redaction).
+- **`jsk cjs`** — Same as `jsk js`, plus a working `require()` resolved against your bot project.
+- **`jsk mjs`** — Evaluate JavaScript as a real ES module — `import`/top-level `await` work.
 - **`jsk sh`** — Run system shell commands with live-streamed output (PowerShell/cmd/`$SHELL`).
 - **`jsk cat` / `jsk curl`** — Read local files (with line spans) or remote text resources.
 - **Diagnostics** — `jsk` status summary, `jsk ping` round-trip timing, `jsk tasks` / `jsk cancel`.
@@ -105,12 +107,13 @@ client.login(process.env.DISCORD_TOKEN)
 | `secretValues`   | `string[]` | `[]`       | Extra exact strings to redact in security mode.                             |
 | `shellTimeout`   | `number`   | `120000`   | Kill a `jsk sh` process after this many ms of inactivity.                   |
 | `exitOnShutdown` | `boolean`  | `false`    | Call `process.exit(0)` after `jsk shutdown` destroys the client.            |
-| `evalTimeout`    | `number`   | `10000`    | Cap on a single *synchronous* stretch of a `jsk js` eval (see below).       |
+| `evalTimeout`    | `number`   | `10000`    | Cap on a single *synchronous* stretch of a `jsk js`/`jsk cjs` eval (see below). |
 | `shell`          | `ShellOverride` | *(auto)* | Override which shell `jsk sh` spawns (see below).                      |
+| `evalModuleDir`  | `string`   | `process.cwd()` | Base directory `jsk cjs`'s `require` and `jsk mjs`'s `import` resolve modules from (see below). |
 
 ### Security mode
 
-The Discord token is **always** redacted from djsk's own output. Setting `security: true` additionally best-effort redacts, from everything djsk sends, replies with, edits, or logs — including `jsk js` results, `jsk cat` / `jsk curl` output (message and file attachments), and shell output:
+The Discord token is **always** redacted from djsk's own output. Setting `security: true` additionally best-effort redacts, from everything djsk sends, replies with, edits, or logs — including `jsk js`/`jsk cjs`/`jsk mjs` results, `jsk cat` / `jsk curl` output (message and file attachments), and shell output:
 
 - secret-like `process.env` values (keys matching `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `API`, …);
 - `.env`-style assignments (`SECRET_KEY=...`), even when not loaded into the environment;
@@ -126,7 +129,7 @@ new Jishaku(client, {
 })
 ```
 
-**`jsk js` user code.** Because eval'd code can call Discord directly (e.g. `message.reply(...)`, `channel.send(...)`, `interaction.editReply(...)`) — bypassing djsk's own output path — security mode protects this in three layers, active only while an eval is running:
+**`jsk js`/`jsk cjs`/`jsk mjs` user code.** Because eval'd code can call Discord directly (e.g. `message.reply(...)`, `channel.send(...)`, `interaction.editReply(...)`) — bypassing djsk's own output path — security mode protects this in three layers, active only while an eval is running:
 
 1. The eval scope's `message`, `msg`, `channel`, `author` and `me` are Proxy-guarded, so their response methods (and `channel`/DMs reached through them) scrub before sending.
 2. For anything reached another way (`client.channels.cache.get(id).send(...)`, a webhook, an interaction, a fetched user, ...), djsk temporarily patches `send`/`reply`/`edit`/`editReply`/ `followUp`/`update` on the installed library's own exported classes for the duration of that single eval, then restores the originals — regardless of how the object was obtained. Gateway/IPC/shard-control methods that happen to share a name (e.g. `Shard.send`, any `*Manager.edit`) are excluded so they aren't corrupted.
@@ -176,7 +179,7 @@ client.on('interactionCreate', (interaction) => jsk.onInteractionCreate(interact
 
 ## Commands
 
-All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js 1 + 1`) or `/jsk <command>`.
+All commands are used as `${prefix}jsk <command>` (e.g. `.jsk js return 1 + 1`) or `/jsk <command>`.
 
 Non-owners get no reaction at all when using text commands (djsk doesn't even reveal it's listening), and an ephemeral "You are not allowed to use this command." reply when using the slash command.
 
@@ -184,7 +187,9 @@ Non-owners get no reaction at all when using text commands (djsk doesn't even re
 | -------------------------- | ------------------------------------------------------------------- |
 | `jsk`                      | Status summary (versions, memory, cache counts, latency).           |
 | `jsk help`                 | Lists all commands.                                                 |
-| `jsk js <code>` (`eval`)   | Evaluates JavaScript. Single expressions auto-return.               |
+| `jsk js <code>` (`eval`)   | Evaluates JavaScript. Use `return` to produce a result.              |
+| `jsk cjs <code>` (`commonjs`) | Like `jsk js`, plus a working `require()`.                        |
+| `jsk mjs <code>` (`esm`)   | Evaluates as a real ES module (`import` works). Use `export default` for a result. |
 | `jsk retain [on\|off]`     | Toggles REPL variable retention (the `vars` object and `_`).        |
 | `jsk sh <command>` (`shell`) | Runs a system shell command, streaming output.                    |
 | `jsk cat <path[#L1-3]>`    | Reads a file, optionally a line span.                              |
@@ -194,22 +199,28 @@ Non-owners get no reaction at all when using text commands (djsk doesn't even re
 | `jsk tasks`                | Lists running djsk tasks.                                          |
 | `jsk cancel <index>`       | Cancels a task (`~` for all, `-1` for the most recent).            |
 
-### `jsk js` scope
+### `jsk js` / `jsk cjs` / `jsk mjs` scope
 
-The following variables are injected into the evaluation scope:
+The following variables are injected into the evaluation scope of all three:
 
-`client` / `bot`, `ctx`, `message` / `msg`, `interaction`, `author`, `channel`, `guild`, `me`, `_` (last result), `vars` (a persistent object when retention is on), `signal` (an `AbortSignal`, see below), and `dynamicImport` (see below).
+`client` / `bot`, `ctx`, `message` / `msg`, `interaction`, `author`, `channel`, `guild`, `me`, `_` (last result), `vars` (a persistent object when retention is on), `signal` (an `AbortSignal`, see below), and `dynamicImport` (see below). `jsk cjs` additionally gets `require`.
 
-`message`/`msg` are `null` and `interaction` is set when `js`/`sh` was invoked via slash command (through the code-input modal) instead of a text command, and vice versa.
+`message`/`msg` are `null` and `interaction` is set when invoked via slash command (through the code-input modal) instead of a text command, and vice versa.
 
-`jsk js` runs eval'd code via `vm.Script#runInThisContext()` rather than a plain function, in the *current* realm — Node's ambient globals and live object references (client, message, ...) work exactly as if it were a plain function, but bare `import(...)` doesn't (it needs `--experimental-vm-modules`, which not every djsk consumer's process runs with). Use the injected `dynamicImport(specifier)` instead — it's a normal function defined outside the vm boundary, so it isn't affected by that restriction: `const os = await dynamicImport('node:os')`.
+`jsk js` and `jsk cjs` run eval'd code via `vm.Script#runInThisContext()` rather than a plain function, in the *current* realm — Node's ambient globals and live object references (client, message, ...) work exactly as if it were a plain function, but bare `import(...)` doesn't (it needs `--experimental-vm-modules`, which not every djsk consumer's process runs with). Use the injected `dynamicImport(specifier)` instead — it's a normal function defined outside the vm boundary, so it isn't affected by that restriction: `const os = await dynamicImport('node:os')`. `jsk cjs` additionally gets a real `require()`, resolved against `evalModuleDir` (default `process.cwd()`) — so `require('discord.js')`, `require('./some-local-file')`, etc. resolve against *your bot project*, not djsk's own.
 
-**Cancelling a running eval.** `jsk js` registers itself in `jsk tasks`, and is cancellable two ways:
+**`jsk mjs` is different.** Static `import` syntax can't appear inside a wrapped function body at all (an ECMAScript rule, not a `vm.Script` limitation), so `jsk mjs` instead runs your code as the top level of a real, freshly-loaded ES module — real `import`, real top-level `await`. Two consequences:
+
+- There's no `return` — a module's top level has no return value. Use `export default <value>` to produce a result instead (e.g. `export default 1 + 1;`).
+- It writes a transient `.mjs` file under `<evalModuleDir>/.djsk-tmp` for the duration of the eval (deleted immediately after; a `.gitignore` is dropped in that folder so it never pollutes your repo). This is required for real npm package imports to resolve — dynamically `import()`-ing a `data:` URL works for `node:` builtins but can't resolve real packages (no filesystem location for Node to walk up node_modules from), so a real file is the only way to make `import 'some-package'` actually work.
+- It does **not** get `evalTimeout`'s synchronous-runaway protection (see below) — a bare `while (true) {}` in `jsk mjs` blocks the whole process with no recovery short of a restart, since that protection is a `vm.Script` feature `jsk mjs` doesn't use. `jsk cancel` still works for an eval stuck *awaiting* something.
+
+**Cancelling a running eval.** All three register themselves in `jsk tasks`, and are cancellable two ways:
 
 - `jsk cancel` — stops an eval stuck *awaiting* something (an infinite retry loop with an `await` in it, a Discord call that never resolves, `await new Promise(() => {})`, ...). `signal` is provided so eval'd code can cooperate explicitly too — pass it to anything that accepts an `AbortSignal` (`fetch(url, { signal })`) or poll `signal.aborted` inside a loop.
-- `evalTimeout` — a hard cap (ms, default `10000`) on any single *synchronous* stretch of the eval, e.g. a bare `while (true) {}`. This case can't be helped by `jsk cancel`: while the eval is stuck in synchronous code, the entire bot process is blocked and can't process *any* Discord events, including a cancel request — so it's enforced automatically instead (via V8's execution watchdog, which can genuinely preempt a tight loop), terminating the eval once it's exceeded.
+- `evalTimeout` — a hard cap (ms, default `10000`) on any single *synchronous* stretch of a `jsk js`/`jsk cjs` eval, e.g. a bare `while (true) {}`. This case can't be helped by `jsk cancel`: while the eval is stuck in synchronous code, the entire bot process is blocked and can't process *any* Discord events, including a cancel request — so it's enforced automatically instead (via V8's execution watchdog, which can genuinely preempt a tight loop), terminating the eval once it's exceeded. Not available for `jsk mjs` — see above.
 
-Between the two, a `jsk js` eval can (almost) always be recovered from without restarting the bot. `evalTimeout` only preempts synchronous *JS* execution, not time spent parked in a blocking *native* call (`child_process.execSync` on a slow command, say) — for `execSync`/`execFileSync`/`spawnSync` specifically (reached via `dynamicImport('node:child_process')`, since bare `import(...)` isn't available — see above), a call that doesn't set its own `timeout` gets `evalTimeout` as one automatically, since those three already support it natively (killing the child and unblocking the parent). Other blocking natives with no such option (`fs.readFileSync` hung on a slow pipe, a bare `Atomics.wait()`, ...) remain a real, if rarer, gap that still needs a restart.
+Between the two, a `jsk js`/`jsk cjs` eval can (almost) always be recovered from without restarting the bot. `evalTimeout` only preempts synchronous *JS* execution, not time spent parked in a blocking *native* call (`child_process.execSync` on a slow command, say) — for `execSync`/`execFileSync`/`spawnSync` specifically (reached via `dynamicImport('node:child_process')`, since bare `import(...)` isn't available — see above), a call that doesn't set its own `timeout` gets `evalTimeout` as one automatically, since those three already support it natively (killing the child and unblocking the parent). Other blocking natives with no such option (`fs.readFileSync` hung on a slow pipe, a bare `Atomics.wait()`, ...) remain a real, if rarer, gap that still needs a restart.
 
 > [!Note]
 >   

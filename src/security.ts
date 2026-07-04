@@ -120,8 +120,23 @@ export function scrubMessagePayload(
   if (typeof payload === 'string') return scrub(payload)
   if (!payload || typeof payload !== 'object') return payload
 
-  const out = { ...payload }
+  // Preserve the payload's prototype rather than a plain `{ ...payload }` spread: some
+  // libraries (discord.js) pass their own payload class through here — e.g. `Message#reply`
+  // builds a `MessagePayload` and hands it straight to `channel.send()`, which branches on
+  // `instanceof MessagePayload` to decide how to resolve it. A plain-object clone silently
+  // loses that prototype (and methods like `resolveBody()`), so `send()` falls through to
+  // treating the clone itself as raw user options — which don't have a top-level `content` (an
+  // instance's real content lives one level down, in `.options.content`, see below) — and ends
+  // up building an empty body, surfacing downstream as a confusing
+  // `DiscordAPIError[50006]: Cannot send an empty message`.
+  const out = Object.assign(Object.create(Object.getPrototypeOf(payload)), payload)
   if (typeof out.content === 'string') out.content = scrub(out.content)
+
+  // Covers MessagePayload-shaped instances (see above), whose actual content lives in
+  // `.options.content` rather than at the top level.
+  if (out.options && typeof out.options === 'object' && typeof out.options.content === 'string') {
+    out.options = { ...out.options, content: scrub(out.options.content) }
+  }
 
   if (scrubFiles && Array.isArray(out.files)) {
     // biome-ignore lint/suspicious/noExplicitAny: file entries are duck-typed across libraries.

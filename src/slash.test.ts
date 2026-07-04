@@ -18,6 +18,8 @@ describe('getSlashCommandData', () => {
       'status',
       'help',
       'js',
+      'cjs',
+      'mjs',
       'sh',
       'cat',
       'curl',
@@ -43,11 +45,13 @@ describe('getSlashCommandData', () => {
     expect(byName.retain.options?.[0].required).toBe(false)
   })
 
-  it('gives js/sh no options, since they use a code-input modal instead', () => {
+  it('gives js/cjs/mjs/sh no options, since they use a code-input modal instead', () => {
     const data = getSlashCommandData()
     const byName = Object.fromEntries(data.options.map((option) => [option.name, option]))
 
     expect(byName.js.options).toBeUndefined()
+    expect(byName.cjs.options).toBeUndefined()
+    expect(byName.mjs.options).toBeUndefined()
     expect(byName.sh.options).toBeUndefined()
   })
 })
@@ -91,8 +95,10 @@ describe('buildCodeModal', () => {
 })
 
 describe('CODE_SUBCOMMANDS', () => {
-  it('contains exactly js and sh', () => {
+  it('contains exactly js, cjs, mjs and sh', () => {
     expect(CODE_SUBCOMMANDS.has('js')).toBe(true)
+    expect(CODE_SUBCOMMANDS.has('cjs')).toBe(true)
+    expect(CODE_SUBCOMMANDS.has('mjs')).toBe(true)
     expect(CODE_SUBCOMMANDS.has('sh')).toBe(true)
     expect(CODE_SUBCOMMANDS.has('cat')).toBe(false)
   })

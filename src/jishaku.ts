@@ -63,6 +63,7 @@ function resolveConfig(config: JishakuConfig): ResolvedConfig {
     secretValues: config.secretValues ?? [],
     evalTimeout: config.evalTimeout ?? 10_000,
     shell: config.shell ?? null,
+    evalModuleDir: config.evalModuleDir ?? process.cwd(),
   }
 }
 
@@ -240,7 +241,7 @@ export class Jishaku<C = AnyClient> {
     const subcommand: string = raw.options.getSubcommand()
 
     if (CODE_SUBCOMMANDS.has(subcommand)) {
-      await raw.showModal(buildCodeModal(subcommand as 'js' | 'sh'))
+      await raw.showModal(buildCodeModal(subcommand as 'js' | 'cjs' | 'mjs' | 'sh'))
       return
     }
 
