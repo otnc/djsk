@@ -99,6 +99,13 @@ export interface JishakuConfig {
   evalTimeout?: number
   /** Overrides which shell `jsk sh` spawns. Default: djsk's platform auto-detection. */
   shell?: ShellOverride
+  /**
+   * Base directory `jsk cjs`'s `require` and `jsk mjs`'s `import` resolve modules from —
+   * point this at your bot's project root if djsk is ever invoked with a different `cwd`.
+   * `jsk mjs` also writes its transient per-eval module file under here (in a `.djsk-tmp`
+   * subdirectory, cleaned up immediately after each eval). Default: `process.cwd()`.
+   */
+  evalModuleDir?: string
 }
 
 /** Fully-resolved configuration with defaults applied. */
@@ -115,4 +122,5 @@ export interface ResolvedConfig {
   secretValues: string[]
   evalTimeout: number
   shell: ShellOverride | null
+  evalModuleDir: string
 }

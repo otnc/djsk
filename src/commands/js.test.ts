@@ -68,6 +68,14 @@ describe('jsk js — terminal output capture', () => {
     expect(send).not.toHaveBeenCalled()
   })
 
+  it('does not auto-return a bare expression — an explicit `return` is required', async () => {
+    const { ctx, send } = makeContext('1 + 1')
+
+    await jsCommand.handler(ctx)
+
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it('restores process.stdout.write after the eval even if user code throws', async () => {
     const original = process.stdout.write
     const { ctx } = makeContext('throw new Error("boom")')

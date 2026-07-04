@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { guardOutbound, SecretScrubber } from './security'
+import { guardOutbound, SecretScrubber, scrubMessagePayload } from './security'
 
 // biome-ignore lint/suspicious/noExplicitAny: minimal fake client for tests.
 const scrubber = new SecretScrubber({ token: 'super-secret-bot-token' } as any)
@@ -89,5 +89,35 @@ describe('guardOutbound', () => {
     const guarded = guardOutbound({ id: '123', foo: 'bar' }, scrub)
     expect(guarded.id).toBe('123')
     expect(guarded.foo).toBe('bar')
+  })
+})
+
+describe('scrubMessagePayload', () => {
+  const scrub = (text: string) => text.replaceAll('SECRET', '[redacted]')
+
+  // Regression test for a bug where `message.reply('a')` failed with discord.js's
+  // `DiscordAPIError[50006]: Cannot send an empty message`. Its internal `channel.send(data)`
+  // passes a `MessagePayload`-like class instance (real content nested in `.options.content`,
+  // not top-level) rather than a plain object; a naive `{ ...payload }` clone stripped its
+  // prototype, which broke discord.js's own `instanceof MessagePayload` branch downstream.
+  it('preserves the prototype of a class-instance payload and scrubs its nested options.content', () => {
+    class MessagePayload {
+      constructor(
+        public target: unknown,
+        public options: { content?: string },
+      ) {}
+      resolveBody() {
+        return this
+      }
+    }
+
+    const payload = new MessagePayload({}, { content: 'a SECRET value' })
+    const out = scrubMessagePayload(payload, scrub, true) as MessagePayload
+
+    expect(out).toBeInstanceOf(MessagePayload)
+    expect(typeof out.resolveBody).toBe('function')
+    expect(out.options.content).toBe('a [redacted] value')
+    // The original must be left untouched (scrubbing must not mutate the passed-in payload).
+    expect(payload.options.content).toBe('a SECRET value')
   })
 })

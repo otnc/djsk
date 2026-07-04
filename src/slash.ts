@@ -15,7 +15,7 @@ const OPTION_TYPE = {
 } as const
 
 /** Subcommands that take free-form code and prompt with a modal instead of a string option. */
-export const CODE_SUBCOMMANDS = new Set(['js', 'sh'])
+export const CODE_SUBCOMMANDS = new Set(['js', 'cjs', 'mjs', 'sh'])
 
 /** Prefix used for the modal `customId`, so a submission can be traced back to its subcommand. */
 const MODAL_ID_PREFIX = 'djsk:'
@@ -42,6 +42,16 @@ export function getSlashCommandData(name = 'jsk') {
         type: OPTION_TYPE.SUB_COMMAND,
         name: 'js',
         description: 'Evaluates JavaScript (opens a code input prompt).',
+      },
+      {
+        type: OPTION_TYPE.SUB_COMMAND,
+        name: 'cjs',
+        description: 'Evaluates JavaScript with `require` available (opens a code input prompt).',
+      },
+      {
+        type: OPTION_TYPE.SUB_COMMAND,
+        name: 'mjs',
+        description: 'Evaluates JavaScript as a real ES module (opens a code input prompt).',
       },
       {
         type: OPTION_TYPE.SUB_COMMAND,
@@ -122,7 +132,17 @@ const MODAL_LABELS: Record<string, { title: string; label: string; placeholder: 
   js: {
     title: 'jsk js',
     label: 'JavaScript code',
-    placeholder: 'Single expressions auto-return; use `return` for statements.',
+    placeholder: 'Use `return` to produce a result.',
+  },
+  cjs: {
+    title: 'jsk cjs',
+    label: 'JavaScript code',
+    placeholder: '`require` is available. Use `return` to produce a result.',
+  },
+  mjs: {
+    title: 'jsk mjs',
+    label: 'JavaScript code (ES module)',
+    placeholder: '`import` is available. Use `export default` to produce a result.',
   },
   sh: {
     title: 'jsk sh',
@@ -150,7 +170,7 @@ export const CODE_FIELD_ID = 'code'
  * Plain data, not a `ModalBuilder`/`Modal` instance — accepted directly by
  * `interaction.showModal()` on both discord.js v13 and v14 (and the selfbot forks).
  */
-export function buildCodeModal(subcommand: 'js' | 'sh') {
+export function buildCodeModal(subcommand: 'js' | 'cjs' | 'mjs' | 'sh') {
   const meta = MODAL_LABELS[subcommand]
   return {
     customId: modalCustomId(subcommand),

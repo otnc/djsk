@@ -1,7 +1,9 @@
 import type { Context } from '../context'
+import { cjsCommands } from './cjs'
 import { filesystemCommands } from './filesystem'
 import { jsCommands } from './js'
 import { managementCommands } from './management'
+import { mjsCommands } from './mjs'
 import { rootCommands } from './root'
 import { shellCommands } from './shell'
 
@@ -21,6 +23,8 @@ export interface Command {
 export const COMMANDS: Command[] = [
   ...rootCommands,
   ...jsCommands,
+  ...cjsCommands,
+  ...mjsCommands,
   ...shellCommands,
   ...managementCommands,
   ...filesystemCommands,
