@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import vm from 'node:vm'
 import type { Context } from '../context'
 import { installPrototypeGuards, installRestGuard } from '../prototype-guard'
@@ -103,6 +104,55 @@ export function createGuardedRequire(
       : resolved
   }) as NodeJS.Require
   return Object.assign(guarded, realRequire)
+}
+
+// Anchor path is arbitrary — only ever used to `require('node:child_process')`, a builtin that
+// resolves without touching the filesystem, so it doesn't matter that this path may not exist.
+const moduleRequire = createRequire(process.cwd())
+
+/**
+ * Temporarily patches the real, shared `node:child_process` module's execSync/execFileSync/
+ * spawnSync with their `evalTimeoutMs`-guarded versions (see {@link withDefaultTimeout}),
+ * returning a function that restores the originals.
+ *
+ * Exists for `jsk mjs` specifically: `dynamicImport(...)` (used by `jsk js`/`jsk cjs`, see
+ * {@link createDynamicImport}) and `createGuardedRequire` (used by `jsk cjs`'s `require`) each
+ * guard only what *they themselves* return, which works because eval'd code has to go through
+ * one of those two functions to reach `node:child_process` in the first place. `jsk mjs`'s
+ * generated module can instead reach it via a real static `import 'node:child_process'`, which
+ * goes straight through Node's own loader with no per-call interception point available —
+ * patching the shared module directly, before that generated module is ever imported, is the
+ * only way to still guard it there.
+ *
+ * Confirmed experimentally (on both Node 22 and Node 24) that this — unlike mutating an
+ * *already-obtained* module/namespace object after the fact, which is a different, negative
+ * case (see {@link guardChildProcessModule}'s doc comment) — IS observed by a
+ * subsequently-loaded module's `import`, whether default, named, or namespace: Node's synthetic
+ * ESM bindings for `node:child_process` evidently bind live to the shared CommonJS
+ * `module.exports` object (what `require('node:child_process')` returns), not a snapshot, as
+ * long as the patch is in place before that module is first loaded.
+ *
+ * Global and single-owner, like the rest of djsk's eval guarding (see
+ * `captureTerminalOutput`'s doc comment) — two concurrent `jsk mjs` evals installing/restoring
+ * this at the same time would race and could hand one eval the other's timeout, an accepted
+ * trade-off for a bot-owner debug tool rather than a general-purpose sandbox.
+ */
+export function installChildProcessTimeoutGuard(evalTimeoutMs: number): () => void {
+  // biome-ignore lint/suspicious/noExplicitAny: mutating an opaque, dynamically-`require`d module object.
+  const cp = moduleRequire('node:child_process') as Record<string, (...args: any[]) => any>
+  const originals = new Map<string, (...args: unknown[]) => unknown>()
+
+  for (const method of GUARDED_CHILD_PROCESS_METHODS) {
+    const original = cp[method]
+    originals.set(method, original)
+    cp[method] = withDefaultTimeout(original, evalTimeoutMs)
+  }
+
+  return () => {
+    for (const [method, original] of originals) {
+      cp[method] = original
+    }
+  }
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   buildBaseScope,
   captureTerminalOutput,
   EvalCancelledError,
+  installChildProcessTimeoutGuard,
   installSecurityGuards,
   makeGuard,
   raceAbort,
@@ -61,15 +62,13 @@ const mjsCommand: Command = {
    * `jsk mjs` blocks the whole process with no recovery short of a restart. `jsk cancel` (via
    * `raceAbort`) still works for an eval stuck *awaiting* something, same as `js`/`cjs`.
    *
-   * Trade-off, not fixed: `jsk js`/`jsk cjs`'s `dynamicImport(...)` scope global (see
-   * `createDynamicImport` in `eval-shared.ts`) defaults a timeout onto `execSync`/
-   * `execFileSync`/`spawnSync` when code fetches `node:child_process` through it. A real static
-   * `import 'node:child_process'` here resolves through Node's actual module loader instead, so
-   * it bypasses that wrapping entirely — there's no interception point for a *static* import
-   * short of a process-wide custom ESM loader hook (`module.register(...)`), which would affect
-   * every import in the host process, not just this eval's. Use `await
-   * dynamicImport('node:child_process')` instead of a static import if the default timeout
-   * matters for a particular eval.
+   * A real static `import 'node:child_process'` here resolves through Node's actual module
+   * loader, bypassing `dynamicImport(...)`/`require(...)`'s own per-call guarding (see
+   * `createDynamicImport`/`createGuardedRequire` in `eval-shared.ts`) entirely — so this
+   * additionally installs `installChildProcessTimeoutGuard` around the temp module's import,
+   * which patches the real, shared `node:child_process` module just for that window instead.
+   * See that function's doc comment for why this (unlike mutating an already-obtained module
+   * object) actually reaches a subsequent static import.
    *
    * Trade-off, not fixed: the cache-busting query string below (needed since Node's ESM loader
    * has no API to evict a module once imported) means every `jsk mjs` call permanently grows
@@ -107,6 +106,7 @@ const mjsCommand: Command = {
     // in `jsk tasks`.
     let restoreGuards: (() => void) | null = null
     let restoreRestGuard: (() => void) | null = null
+    let restoreChildProcessGuard: (() => void) | null = null
     let capture: ReturnType<typeof captureTerminalOutput> | null = null
     let file: string | null = null
 
@@ -122,6 +122,11 @@ const mjsCommand: Command = {
 
       const preamble = `const { ${Object.keys(scope).join(', ')} } = globalThis[${JSON.stringify(argsKey)}];\n`
       writeFileSync(file, preamble + code, 'utf-8')
+
+      // Installed right before the import that actually loads the generated module — see
+      // installChildProcessTimeoutGuard's doc comment for why this has to patch the real,
+      // shared module rather than something scoped to this one eval like dynamicImport/require.
+      restoreChildProcessGuard = installChildProcessTimeoutGuard(jsk.config.evalTimeout)
 
       // Cache-busting query string so repeated evals of the same task-index-free filename
       // (or, after a restart, the same task index again) never serve a stale cached module.
@@ -154,6 +159,7 @@ const mjsCommand: Command = {
       throw error
     } finally {
       capture?.restore()
+      restoreChildProcessGuard?.()
       restoreRestGuard?.()
       restoreGuards?.()
       jsk.removeTask(task)
