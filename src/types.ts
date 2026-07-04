@@ -106,6 +106,22 @@ export interface JishakuConfig {
    * subdirectory, cleaned up immediately after each eval). Default: `process.cwd()`.
    */
   evalModuleDir?: string
+  /**
+   * When `true`, djsk installs process-wide `uncaughtException`/`unhandledRejection`
+   * listeners for the life of the process, so an error that escapes the awaited chain a `jsk
+   * js`/`jsk cjs`/`jsk mjs`/`jsk sh` eval runs in — a fire-and-forget promise the eval'd code
+   * left unawaited, an event listener it registered that throws later, ... — gets logged
+   * instead of taking the whole bot down. Node's default for both events is to terminate the
+   * process; djsk's own per-command try/catch (see {@link Jishaku.run}) only ever covers
+   * errors thrown or rejected within that command's own awaited chain, not ones like these.
+   *
+   * This is a process-wide safety net, not scoped to djsk's own commands — it also swallows
+   * crashes from unrelated parts of your bot that would otherwise have exited the process. If
+   * you already install your own top-level `uncaughtException`/`unhandledRejection` handlers
+   * (e.g. for a process manager or crash reporter), set this to `false` so djsk doesn't shadow
+   * them. Default: `true`.
+   */
+  catchProcessErrors?: boolean
 }
 
 /** Fully-resolved configuration with defaults applied. */
@@ -123,4 +139,5 @@ export interface ResolvedConfig {
   evalTimeout: number
   shell: ShellOverride | null
   evalModuleDir: string
+  catchProcessErrors: boolean
 }

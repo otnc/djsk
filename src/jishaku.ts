@@ -64,6 +64,7 @@ function resolveConfig(config: JishakuConfig): ResolvedConfig {
     evalTimeout: config.evalTimeout ?? 10_000,
     shell: config.shell ?? null,
     evalModuleDir: config.evalModuleDir ?? process.cwd(),
+    catchProcessErrors: config.catchProcessErrors ?? true,
   }
 }
 
@@ -124,6 +125,24 @@ export class Jishaku<C = AnyClient> {
           )
         }
       })
+    }
+
+    if (this.config.catchProcessErrors) {
+      process.on('uncaughtException', this.handleProcessError)
+      process.on('unhandledRejection', this.handleProcessError)
+    }
+  }
+
+  /**
+   * Logs an error that escaped every awaited chain djsk controls — see `catchProcessErrors` —
+   * instead of letting Node's default `uncaughtException`/`unhandledRejection` behavior
+   * terminate the process over it. An arrow-function class field (not a method) so the same
+   * bound reference is used for both `process.on` calls above.
+   */
+  private readonly handleProcessError = (error: unknown): void => {
+    const text = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    if (this.config.consoleLog) {
+      console.error('[djsk] Uncaught error (process kept alive):', this.scrub(text))
     }
   }
 
