@@ -111,4 +111,49 @@ describe('jsk mjs', () => {
     const tmpDir = path.join(projectRoot, '.djsk-tmp')
     expect(readdirSync(tmpDir)).toEqual(['.gitignore'])
   })
+
+  describe('blocking child_process calls via a real static import', () => {
+    it('kills an execSync call with no explicit timeout after evalTimeout', async () => {
+      const timedJsk = makeJsk({ evalModuleDir: projectRoot, evalTimeout: 300 })
+      const { ctx, react, send } = makeContext(
+        `import cp from "node:child_process";
+         let result;
+         try {
+           cp.execSync(${JSON.stringify(process.execPath)} + ' -e "setTimeout(()=>{}, 3000)"');
+           result = 'ran to completion';
+         } catch (e) {
+           result = e.code;
+         }
+         export default result;`,
+        timedJsk,
+      )
+
+      const start = Date.now()
+      await mjsCommand.handler(ctx)
+      const elapsed = Date.now() - start
+
+      // Killed by the injected default timeout (~300ms), not left to run the full 3s — proves
+      // a real static `import cp from "node:child_process"` is guarded too, not just
+      // dynamicImport (jsk js) / require (jsk cjs).
+      expect(elapsed).toBeLessThan(2000)
+      expect(react).toHaveBeenCalledWith('✅')
+      const [payload] = send.mock.calls[0] as [{ content: string }]
+      expect(payload.content).toBe('ETIMEDOUT')
+    }, 10_000)
+
+    it('restores the real, shared child_process module once the eval finishes', async () => {
+      const childProcess = await import('node:child_process')
+      const originalExecSync = childProcess.execSync
+      const { ctx, send } = makeContext(
+        'import cp from "node:child_process";\nexport default typeof cp.execSync;',
+        jsk,
+      )
+
+      await mjsCommand.handler(ctx)
+
+      const [payload] = send.mock.calls[0] as [{ content: string }]
+      expect(payload.content).toBe('function')
+      expect(childProcess.execSync).toBe(originalExecSync)
+    })
+  })
 })

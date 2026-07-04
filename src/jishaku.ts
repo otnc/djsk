@@ -147,6 +147,23 @@ export class Jishaku<C = AnyClient> {
   }
 
   /**
+   * Removes the process-wide `uncaughtException`/`unhandledRejection` listeners installed by
+   * `catchProcessErrors` (a no-op if it was `false`, or if called more than once).
+   *
+   * `process` is a shared, process-wide `EventEmitter` with no concept of "this listener came
+   * from an instance that's since been discarded" — those two listeners stay registered, and
+   * `handleProcessError`'s closure keeps this whole instance (client, owners, scrubber,
+   * taskList) reachable from `process`, for as long as the process runs, unless explicitly
+   * removed. Call this before dropping the last reference to a `Jishaku` instance you no longer
+   * need — e.g. a test's `afterEach`, or before constructing a replacement after a hot-reload —
+   * so listeners (and instances) don't accumulate across the process's lifetime.
+   */
+  destroy(): void {
+    process.off('uncaughtException', this.handleProcessError)
+    process.off('unhandledRejection', this.handleProcessError)
+  }
+
+  /**
    * Redacts secrets from `text` before it is exposed anywhere.
    *
    * The Discord token is always redacted; when security mode is enabled, secret-like

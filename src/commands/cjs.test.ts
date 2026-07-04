@@ -69,3 +69,65 @@ describe('jsk cjs — require', () => {
     }
   })
 })
+
+describe('jsk cjs — blocking child_process calls via require', () => {
+  it('kills an execSync call with no explicit timeout after evalTimeout, same as dynamicImport in jsk js', async () => {
+    const jsk = makeJsk({ evalTimeout: 300 })
+    const { ctx, react, send } = makeContext(
+      // `await Promise.resolve()` closes out the vm.Script's initial synchronous stretch (the
+      // only part `evalTimeout`'s watchdog actually times) before the blocking execSync call —
+      // otherwise, since `require` (unlike `dynamicImport`) has no `await` of its own, the
+      // watchdog would race execSync's own injected timeout and could trip first, which is a
+      // separate, pre-existing characteristic of any fully-synchronous eval and not what this
+      // test is about (see js.test.ts's equivalent dynamicImport-based test, which gets the
+      // same effect for free from `await dynamicImport(...)`).
+      `const cp = require("node:child_process")
+       await Promise.resolve()
+       try {
+         cp.execSync(${JSON.stringify(process.execPath)} + ' -e "setTimeout(()=>{}, 3000)"')
+         return 'ran to completion'
+       } catch (e) {
+         return e.code
+       }`,
+      jsk,
+    )
+
+    const start = Date.now()
+    await cjsCommand.handler(ctx)
+    const elapsed = Date.now() - start
+
+    // Killed by the injected default timeout (~300ms), not left to run the full 3s — proves
+    // require('child_process') is guarded the same way dynamicImport('node:child_process') is,
+    // not just passed through as the raw, unwrapped module.
+    expect(elapsed).toBeLessThan(2000)
+    expect(react).toHaveBeenCalledWith('✅')
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('ETIMEDOUT')
+  }, 10_000)
+
+  it('does not mutate the real child_process module (only the require() result is wrapped)', async () => {
+    const childProcess = await import('node:child_process')
+    const originalExecSync = childProcess.execSync
+    const jsk = makeJsk({ evalTimeout: 5000 })
+    const { ctx } = makeContext('return typeof require("node:child_process").execSync', jsk)
+
+    await cjsCommand.handler(ctx)
+
+    expect(childProcess.execSync).toBe(originalExecSync)
+  })
+
+  it('preserves require.resolve/cache/main/extensions on the guarded require', async () => {
+    const { ctx, send } = makeContext(
+      `return [
+         typeof require.resolve,
+         typeof require.cache,
+         typeof require.extensions,
+       ].join(',')`,
+    )
+
+    await cjsCommand.handler(ctx)
+
+    const [payload] = send.mock.calls[0] as [{ content: string }]
+    expect(payload.content).toBe('function,object,object')
+  })
+})

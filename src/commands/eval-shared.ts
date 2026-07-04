@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import vm from 'node:vm'
 import type { Context } from '../context'
 import { installPrototypeGuards, installRestGuard } from '../prototype-guard'
@@ -37,6 +38,29 @@ function withDefaultTimeout(fn: (...args: any[]) => any, timeoutMs: number) {
 }
 
 /**
+ * Proxy-wraps a `node:child_process` module object so its execSync/execFileSync/spawnSync
+ * default to `evalTimeoutMs` (see {@link withDefaultTimeout}) — the shared interception point
+ * for both {@link createDynamicImport} and {@link createGuardedRequire}. Not a global
+ * monkeypatch of the module: mutating the module object reached via a default import (`import
+ * cp from 'node:child_process'`) does NOT affect what a named/namespace import or a fresh
+ * `require('node:child_process')` sees, confirmed experimentally — Node hands out the same
+ * live module object for `require`, but ESM bindings for built-ins aren't reliably live across
+ * that boundary, so every consumer of this module needs its own wrap at its own entry point
+ * rather than one shared patch.
+ */
+function guardChildProcessModule<T extends object>(module: T, evalTimeoutMs: number): T {
+  return new Proxy(module, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      return typeof prop === 'string' && GUARDED_CHILD_PROCESS_METHODS.has(prop)
+        ? // biome-ignore lint/suspicious/noExplicitAny: `T` is an opaque module shape here; the actual signature is forwarded verbatim by withDefaultTimeout.
+          withDefaultTimeout(value as (...args: any[]) => any, evalTimeoutMs)
+        : value
+    },
+  })
+}
+
+/**
  * Builds the `dynamicImport` scope entry shared by every eval flavor.
  *
  * Bare `import(...)` inside a `vm.Script` requires an opt-in `importModuleDynamically`
@@ -45,27 +69,89 @@ function withDefaultTimeout(fn: (...args: any[]) => any, timeoutMs: number) {
  * vm-executed code (in normal module scope), so it can freely `import()` without that
  * restriction; eval'd code gets the same capability via `dynamicImport(...)`.
  *
- * `node:child_process` specifically comes back Proxy-wrapped so execSync/execFileSync/
- * spawnSync default to `evalTimeoutMs` (see {@link withDefaultTimeout}) — this is the actual
- * interception point, not a global monkeypatch of the module: mutating the module object
- * reached via a default import (`import cp from 'node:child_process'`) does NOT affect what a
- * named or namespace import (what `dynamicImport` returns) sees, confirmed experimentally —
- * Node's synthetic ESM bindings for built-ins aren't reliably live across that boundary, so
- * patching has to happen right here instead.
+ * `node:child_process` specifically comes back guarded via {@link guardChildProcessModule} — see
+ * its doc comment for why this needs its own wrap rather than relying on a shared module patch.
  */
 export function createDynamicImport(evalTimeoutMs: number) {
   return async (specifier: string) => {
     const imported = await import(specifier)
-    if (specifier !== 'node:child_process' && specifier !== 'child_process') return imported
+    return specifier === 'node:child_process' || specifier === 'child_process'
+      ? guardChildProcessModule(imported, evalTimeoutMs)
+      : imported
+  }
+}
 
-    return new Proxy(imported, {
-      get(target, prop, receiver) {
-        const value = Reflect.get(target, prop, receiver)
-        return typeof prop === 'string' && GUARDED_CHILD_PROCESS_METHODS.has(prop)
-          ? withDefaultTimeout(value, evalTimeoutMs)
-          : value
-      },
-    })
+/**
+ * Wraps a real `require` (from `node:module`'s `createRequire`, used by `jsk cjs`) so
+ * `require('child_process')`/`require('node:child_process')` also comes back guarded via
+ * {@link guardChildProcessModule} — without this, `require` is a direct, unwrapped path to
+ * Node's real child_process module that completely bypasses the timeout `dynamicImport` (see
+ * above) defaults onto execSync/execFileSync/spawnSync, since `jsk cjs` code has no reason to
+ * reach for `dynamicImport` when it already has a working `require`.
+ *
+ * `Object.assign`s the real `require`'s own properties (`resolve`, `cache`, `main`,
+ * `extensions`) onto the wrapper, so code that relies on those (`require.resolve(...)`, etc.)
+ * keeps working exactly as if it had the unwrapped `require`.
+ */
+export function createGuardedRequire(
+  realRequire: NodeJS.Require,
+  evalTimeoutMs: number,
+): NodeJS.Require {
+  const guarded = ((specifier: string) => {
+    const resolved = realRequire(specifier)
+    return specifier === 'node:child_process' || specifier === 'child_process'
+      ? guardChildProcessModule(resolved, evalTimeoutMs)
+      : resolved
+  }) as NodeJS.Require
+  return Object.assign(guarded, realRequire)
+}
+
+// Anchor path is arbitrary — only ever used to `require('node:child_process')`, a builtin that
+// resolves without touching the filesystem, so it doesn't matter that this path may not exist.
+const moduleRequire = createRequire(process.cwd())
+
+/**
+ * Temporarily patches the real, shared `node:child_process` module's execSync/execFileSync/
+ * spawnSync with their `evalTimeoutMs`-guarded versions (see {@link withDefaultTimeout}),
+ * returning a function that restores the originals.
+ *
+ * Exists for `jsk mjs` specifically: `dynamicImport(...)` (used by `jsk js`/`jsk cjs`, see
+ * {@link createDynamicImport}) and `createGuardedRequire` (used by `jsk cjs`'s `require`) each
+ * guard only what *they themselves* return, which works because eval'd code has to go through
+ * one of those two functions to reach `node:child_process` in the first place. `jsk mjs`'s
+ * generated module can instead reach it via a real static `import 'node:child_process'`, which
+ * goes straight through Node's own loader with no per-call interception point available —
+ * patching the shared module directly, before that generated module is ever imported, is the
+ * only way to still guard it there.
+ *
+ * Confirmed experimentally (on both Node 22 and Node 24) that this — unlike mutating an
+ * *already-obtained* module/namespace object after the fact, which is a different, negative
+ * case (see {@link guardChildProcessModule}'s doc comment) — IS observed by a
+ * subsequently-loaded module's `import`, whether default, named, or namespace: Node's synthetic
+ * ESM bindings for `node:child_process` evidently bind live to the shared CommonJS
+ * `module.exports` object (what `require('node:child_process')` returns), not a snapshot, as
+ * long as the patch is in place before that module is first loaded.
+ *
+ * Global and single-owner, like the rest of djsk's eval guarding (see
+ * `captureTerminalOutput`'s doc comment) — two concurrent `jsk mjs` evals installing/restoring
+ * this at the same time would race and could hand one eval the other's timeout, an accepted
+ * trade-off for a bot-owner debug tool rather than a general-purpose sandbox.
+ */
+export function installChildProcessTimeoutGuard(evalTimeoutMs: number): () => void {
+  // biome-ignore lint/suspicious/noExplicitAny: mutating an opaque, dynamically-`require`d module object.
+  const cp = moduleRequire('node:child_process') as Record<string, (...args: any[]) => any>
+  const originals = new Map<string, (...args: unknown[]) => unknown>()
+
+  for (const method of GUARDED_CHILD_PROCESS_METHODS) {
+    const original = cp[method]
+    originals.set(method, original)
+    cp[method] = withDefaultTimeout(original, evalTimeoutMs)
+  }
+
+  return () => {
+    for (const [method, original] of originals) {
+      cp[method] = original
+    }
   }
 }
 
@@ -392,17 +478,25 @@ export async function runVmEval(
   // registering the task first guarantees it's visible in `jsk tasks`/cancellable via
   // `jsk cancel` immediately, without an extra tick's delay whenever security mode is off.
   const task = jsk.submitTask(taskName, () => controller.abort())
-  const { restoreGuards, restoreRestGuard } = await installSecurityGuards(ctx)
   // Unique per invocation (task.index is a monotonic counter) so concurrent evals can't
   // clobber each other's stashed arguments on the shared global object.
   const argsKey = `__djsk_eval_args_${task.index}__`
-  // In security mode, also scrub what actually reaches the real terminal (not just the copy
-  // captured for Discord) — otherwise a `console.log(client.token)` still leaks it into the
-  // bot's own local logs, which may be shipped to a third-party service the operator doesn't
-  // fully trust. Off by default (matches the general "token redaction is always on, full
-  // scrubbing is opt-in" convention) so normal debugging output isn't silently altered.
-  const capture = captureTerminalOutput(jsk.config.security ? (text) => jsk.scrub(text) : null)
+  // Declared here (rather than as `const` from a destructured `await` above) and populated
+  // inside the `try` below, so a throw from `installSecurityGuards`/`captureTerminalOutput`
+  // itself still reaches the `finally` — otherwise such a throw would skip `jsk.removeTask`
+  // entirely, leaking `task` as a permanent ghost entry in `jsk tasks`.
+  let restoreGuards: (() => void) | null = null
+  let restoreRestGuard: (() => void) | null = null
+  let capture: ReturnType<typeof captureTerminalOutput> | null = null
   try {
+    ;({ restoreGuards, restoreRestGuard } = await installSecurityGuards(ctx))
+    // In security mode, also scrub what actually reaches the real terminal (not just the copy
+    // captured for Discord) — otherwise a `console.log(client.token)` still leaks it into the
+    // bot's own local logs, which may be shipped to a third-party service the operator doesn't
+    // fully trust. Off by default (matches the general "token redaction is always on, full
+    // scrubbing is opt-in" convention) so normal debugging output isn't silently altered.
+    capture = captureTerminalOutput(jsk.config.security ? (text) => jsk.scrub(text) : null)
+
     // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for vm.runInThisContext, deleted immediately below.
     ;(globalThis as any)[argsKey] = argValues
 
@@ -431,7 +525,9 @@ export async function runVmEval(
     await ctx.react('✅')
     await sendResult(ctx, result, terminalOutput)
   } catch (error) {
-    const terminalOutput = capture.restore()
+    // `capture` can still be `null` here if the throw came from `installSecurityGuards` itself,
+    // before terminal output capture was even installed.
+    const terminalOutput = capture?.restore() ?? ''
 
     if (error instanceof EvalCancelledError) {
       // `jsk cancel` already sends its own confirmation — report only whatever terminal
@@ -450,7 +546,7 @@ export async function runVmEval(
 
     throw error
   } finally {
-    capture.restore()
+    capture?.restore()
     restoreRestGuard?.()
     restoreGuards?.()
     jsk.removeTask(task)

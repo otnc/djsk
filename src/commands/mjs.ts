@@ -5,6 +5,7 @@ import {
   buildBaseScope,
   captureTerminalOutput,
   EvalCancelledError,
+  installChildProcessTimeoutGuard,
   installSecurityGuards,
   makeGuard,
   raceAbort,
@@ -60,6 +61,22 @@ const mjsCommand: Command = {
    * of `EvalTimedOutError`'s synchronous-runaway protection here — a bare `while (true) {}` in
    * `jsk mjs` blocks the whole process with no recovery short of a restart. `jsk cancel` (via
    * `raceAbort`) still works for an eval stuck *awaiting* something, same as `js`/`cjs`.
+   *
+   * A real static `import 'node:child_process'` here resolves through Node's actual module
+   * loader, bypassing `dynamicImport(...)`/`require(...)`'s own per-call guarding (see
+   * `createDynamicImport`/`createGuardedRequire` in `eval-shared.ts`) entirely — so this
+   * additionally installs `installChildProcessTimeoutGuard` around the temp module's import,
+   * which patches the real, shared `node:child_process` module just for that window instead.
+   * See that function's doc comment for why this (unlike mutating an already-obtained module
+   * object) actually reaches a subsequent static import.
+   *
+   * Trade-off, not fixed: the cache-busting query string below (needed since Node's ESM loader
+   * has no API to evict a module once imported) means every `jsk mjs` call permanently grows
+   * Node's module cache by one entry — a slow memory leak from ordinary (non-error) use of this
+   * command over a long-running process's lifetime. Not fixable without either giving up real
+   * top-level `import`/`await` support (this command's entire purpose) or requiring consumers
+   * run with `--experimental-vm-modules` (see the `data:` URL trade-off above for why a
+   * `vm.Script`-based approach isn't used instead).
    */
   async handler(ctx) {
     const code = ctx.codeblock.content
@@ -78,34 +95,45 @@ const mjsCommand: Command = {
     // registering the task first guarantees it's visible in `jsk tasks`/cancellable via
     // `jsk cancel` immediately, without an extra tick's delay whenever security mode is off.
     const task = jsk.submitTask('jsk mjs', () => controller.abort())
-    const { restoreGuards, restoreRestGuard } = await installSecurityGuards(ctx)
     // Unique per invocation (task.index is a monotonic counter) so concurrent evals get their
     // own file and can't clobber each other's stashed arguments on the shared global object.
     const argsKey = `__djsk_eval_args_${task.index}__`
-    const capture = captureTerminalOutput(jsk.config.security ? (text) => jsk.scrub(text) : null)
-
-    const dir = ensureTempDir(jsk.config.evalModuleDir)
-    const file = path.join(dir, `eval-${task.index}.mjs`)
+    // Declared here and populated inside the `try` below (rather than ahead of it) so a throw
+    // from installSecurityGuards/captureTerminalOutput/ensureTempDir/writeFileSync still
+    // reaches the `finally` — otherwise it would skip cleanup entirely: `capture`'s monkeypatch
+    // of process.stdout/stderr.write would never be undone (permanently, until a restart),
+    // security-mode guards would stay installed, and `task` would be a permanent ghost entry
+    // in `jsk tasks`.
+    let restoreGuards: (() => void) | null = null
+    let restoreRestGuard: (() => void) | null = null
+    let restoreChildProcessGuard: (() => void) | null = null
+    let capture: ReturnType<typeof captureTerminalOutput> | null = null
+    let file: string | null = null
 
     try {
-      // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for the generated module, deleted immediately below.
+      ;({ restoreGuards, restoreRestGuard } = await installSecurityGuards(ctx))
+      capture = captureTerminalOutput(jsk.config.security ? (text) => jsk.scrub(text) : null)
+
+      const dir = ensureTempDir(jsk.config.evalModuleDir)
+      file = path.join(dir, `eval-${task.index}.mjs`)
+
+      // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for the generated module, deleted in the `finally` below.
       ;(globalThis as any)[argsKey] = scope
 
       const preamble = `const { ${Object.keys(scope).join(', ')} } = globalThis[${JSON.stringify(argsKey)}];\n`
       writeFileSync(file, preamble + code, 'utf-8')
 
-      let namespace: Record<string, unknown>
-      try {
-        // Cache-busting query string so repeated evals of the same task-index-free filename
-        // (or, after a restart, the same task index again) never serve a stale cached module.
-        namespace = await raceAbort(
-          import(`${pathToFileURL(file).href}?t=${Date.now()}`),
-          controller.signal,
-        )
-      } finally {
-        // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for the generated module.
-        delete (globalThis as any)[argsKey]
-      }
+      // Installed right before the import that actually loads the generated module — see
+      // installChildProcessTimeoutGuard's doc comment for why this has to patch the real,
+      // shared module rather than something scoped to this one eval like dynamicImport/require.
+      restoreChildProcessGuard = installChildProcessTimeoutGuard(jsk.config.evalTimeout)
+
+      // Cache-busting query string so repeated evals of the same task-index-free filename
+      // (or, after a restart, the same task index again) never serve a stale cached module.
+      const namespace: Record<string, unknown> = await raceAbort(
+        import(`${pathToFileURL(file).href}?t=${Date.now()}`),
+        controller.signal,
+      )
 
       const terminalOutput = capture.restore()
       const result = 'default' in namespace ? namespace.default : undefined
@@ -115,7 +143,9 @@ const mjsCommand: Command = {
       await ctx.react('✅')
       await sendResult(ctx, result, terminalOutput)
     } catch (error) {
-      const terminalOutput = capture.restore()
+      // `capture` can still be `null` here if the throw happened before terminal output
+      // capture was even installed (e.g. installSecurityGuards or ensureTempDir itself threw).
+      const terminalOutput = capture?.restore() ?? ''
 
       if (error instanceof EvalCancelledError) {
         // `jsk cancel` already sends its own confirmation — report only whatever terminal
@@ -128,14 +158,19 @@ const mjsCommand: Command = {
 
       throw error
     } finally {
-      capture.restore()
+      capture?.restore()
+      restoreChildProcessGuard?.()
       restoreRestGuard?.()
       restoreGuards?.()
       jsk.removeTask(task)
-      try {
-        rmSync(file, { force: true })
-      } catch {
-        // Best-effort cleanup; a leftover temp file is harmless (and .gitignore'd).
+      // biome-ignore lint/suspicious/noExplicitAny: temporary bridge for the generated module.
+      delete (globalThis as any)[argsKey]
+      if (file) {
+        try {
+          rmSync(file, { force: true })
+        } catch {
+          // Best-effort cleanup; a leftover temp file is harmless (and .gitignore'd).
+        }
       }
     }
   },
