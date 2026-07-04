@@ -6,7 +6,10 @@ import { paginate } from './paginate'
 
 function makeJsk(): Jishaku {
   // biome-ignore lint/suspicious/noExplicitAny: minimal fake client for tests.
-  return new Jishaku({ token: 't0ken-fake' } as any, { consoleLog: false })
+  return new Jishaku({ token: 't0ken-fake' } as any, {
+    consoleLog: false,
+    catchProcessErrors: false,
+  })
 }
 
 function makeCtx(): Context {

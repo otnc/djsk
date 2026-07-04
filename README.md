@@ -110,6 +110,13 @@ client.login(process.env.DISCORD_TOKEN)
 | `evalTimeout`    | `number`   | `10000`    | Cap on a single *synchronous* stretch of a `jsk js`/`jsk cjs` eval (see below). |
 | `shell`          | `ShellOverride` | *(auto)* | Override which shell `jsk sh` spawns (see below).                      |
 | `evalModuleDir`  | `string`   | `process.cwd()` | Base directory `jsk cjs`'s `require` and `jsk mjs`'s `import` resolve modules from (see below). |
+| `catchProcessErrors` | `boolean` | `true`  | Keep the process alive on an `uncaughtException`/`unhandledRejection` that escapes an eval (see below). |
+
+### Process-wide error safety net
+
+`jsk js` / `jsk cjs` / `jsk mjs` / `jsk sh` already catch and report anything an eval throws or rejects with *within its own awaited chain* — that's just `jsk`'s normal ‼️ error reporting. But eval'd code can also fail *outside* that chain: a `fetch(...)` left unawaited that rejects after the command already returned, an event listener the eval registered (`client.on(...)`) that throws later, and so on. Node's default for both `uncaughtException` and `unhandledRejection` is to terminate the process, which would take the whole bot down over a mistake in a one-off debug snippet.
+
+With `catchProcessErrors` (on by default), djsk installs its own `uncaughtException`/`unhandledRejection` listeners for the life of the process, logging instead of crashing. This is process-wide, not scoped to djsk's own commands — set it to `false` if you already install your own top-level handlers (a process manager, crash reporter, ...) and don't want djsk's to shadow them.
 
 ### Security mode
 

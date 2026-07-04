@@ -20,7 +20,7 @@ function makeJsk(configOverrides: Record<string, unknown> = {}): Jishaku {
   return new Jishaku(
     // biome-ignore lint/suspicious/noExplicitAny: minimal fake client for tests.
     { token: 't0ken-fake' } as any,
-    { consoleLog: false, shellTimeout: 5000, ...configOverrides },
+    { consoleLog: false, catchProcessErrors: false, shellTimeout: 5000, ...configOverrides },
   )
 }
 
