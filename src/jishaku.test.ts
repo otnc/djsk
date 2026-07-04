@@ -71,48 +71,36 @@ describe('Jishaku — update check on construction', () => {
 
 describe('Jishaku — process-wide error safety net', () => {
   // Jishaku registers real `process.on` listeners for the life of the process; every test here
-  // captures and removes exactly the ones its own instance added, so no listener leaks into
-  // later tests (or fires against an unrelated later `uncaughtException`/`unhandledRejection`).
-  const captureProcessListeners = () => {
-    const onSpy = vi.spyOn(process, 'on')
-    return {
-      onSpy,
-      cleanup: () => {
-        for (const [event, listener] of onSpy.mock.calls) {
-          if (event === 'uncaughtException' || event === 'unhandledRejection') {
-            process.removeListener(event, listener as (...args: unknown[]) => void)
-          }
-        }
-        onSpy.mockRestore()
-      },
-    }
-  }
+  // calls `jsk.destroy()` to remove exactly the ones its own instance added, so no listener
+  // leaks into later tests (or fires against an unrelated later `uncaughtException`/
+  // `unhandledRejection`).
 
   it('installs uncaughtException/unhandledRejection listeners by default', () => {
-    const { onSpy, cleanup } = captureProcessListeners()
-
-    new Jishaku(fakeClient, { consoleLog: false })
+    const onSpy = vi.spyOn(process, 'on')
+    const jsk = new Jishaku(fakeClient, { consoleLog: false })
 
     expect(onSpy).toHaveBeenCalledWith('uncaughtException', expect.any(Function))
     expect(onSpy).toHaveBeenCalledWith('unhandledRejection', expect.any(Function))
-    cleanup()
+
+    jsk.destroy()
+    onSpy.mockRestore()
   })
 
   it('does not install those listeners when catchProcessErrors is false', () => {
-    const { onSpy, cleanup } = captureProcessListeners()
-
-    new Jishaku(fakeClient, { consoleLog: false, catchProcessErrors: false })
+    const onSpy = vi.spyOn(process, 'on')
+    const jsk = new Jishaku(fakeClient, { consoleLog: false, catchProcessErrors: false })
 
     expect(onSpy).not.toHaveBeenCalledWith('uncaughtException', expect.any(Function))
     expect(onSpy).not.toHaveBeenCalledWith('unhandledRejection', expect.any(Function))
-    cleanup()
+
+    jsk.destroy()
+    onSpy.mockRestore()
   })
 
   it('logs an escaped error instead of letting it propagate', () => {
-    const { onSpy, cleanup } = captureProcessListeners()
+    const onSpy = vi.spyOn(process, 'on')
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-
-    new Jishaku(fakeClient, { consoleLog: true })
+    const jsk = new Jishaku(fakeClient, { consoleLog: true })
     const handler = onSpy.mock.calls.find((call) => call[0] === 'uncaughtException')?.[1] as (
       err: unknown,
     ) => void
@@ -123,15 +111,15 @@ describe('Jishaku — process-wide error safety net', () => {
       expect.stringContaining('boom'),
     )
 
+    jsk.destroy()
     error.mockRestore()
-    cleanup()
+    onSpy.mockRestore()
   })
 
   it('does not log when consoleLog is off', () => {
-    const { onSpy, cleanup } = captureProcessListeners()
+    const onSpy = vi.spyOn(process, 'on')
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-
-    new Jishaku(fakeClient, { consoleLog: false })
+    const jsk = new Jishaku(fakeClient, { consoleLog: false })
     const handler = onSpy.mock.calls.find((call) => call[0] === 'uncaughtException')?.[1] as (
       err: unknown,
     ) => void
@@ -139,7 +127,19 @@ describe('Jishaku — process-wide error safety net', () => {
 
     expect(error).not.toHaveBeenCalled()
 
+    jsk.destroy()
     error.mockRestore()
-    cleanup()
+    onSpy.mockRestore()
+  })
+
+  it('destroy() removes the listeners so they no longer fire, and is safe to call more than once', () => {
+    const jsk = new Jishaku(fakeClient, { consoleLog: true })
+    const before = process.listenerCount('uncaughtException')
+
+    jsk.destroy()
+
+    expect(process.listenerCount('uncaughtException')).toBe(before - 1)
+    expect(() => jsk.destroy()).not.toThrow()
+    expect(process.listenerCount('uncaughtException')).toBe(before - 1)
   })
 })
